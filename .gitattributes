@@ -1,0 +1,16 @@
+# Keep LF in the repo and in the working tree — Rojo, Luau tooling and the
+# .vscode settings all assume LF, and mixed endings produce noisy diffs.
+* text=auto eol=lf
+
+# Roblox binary formats must never be line-ending converted.
+*.rbxl  binary
+*.rbxm  binary
+*.rbxlx binary
+*.rbxmx binary
+
+# Common binary assets.
+*.png binary
+*.jpg binary
+*.ogg binary
+*.mp3 binary
+*.fbx binary

@@ -1,0 +1,9 @@
+{
+  "files.eol": "\n",
+  "[luau]": {
+    "editor.insertSpaces": false,
+    "editor.detectIndentation": false
+  },
+  "luau-lsp.sourcemap.rojoProjectFile": "default.project.json",
+  "luau-lsp.sourcemap.autogenerate": true
+}
