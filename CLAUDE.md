@@ -70,7 +70,8 @@ Shared (`ReplicatedStorage.Shared`):
 - **`Config`** — data only, no behaviour. All tuning plus the `PlantSpec`/`FruitSpec` types. Prefer adding a config value over hardcoding.
 - **`Remotes`** — lazily creates (server) or waits for (client) `ReplicatedStorage.Remotes`, so neither side depends on load order. Access via `Remotes.event(Remotes.PLANT_SEED)` / `Remotes.func(Remotes.SELL_FRUIT)`.
 - **`Seed`** — `createPickup()` for the belt ball, `createTool()` for the Backpack item.
-- **`PlantModel`** — builds plant and fruit geometry from a species entry.
+- **`PlantModel`** — builds plant and fruit geometry from a species entry. `groundOf` is the inverse of `place`, so the client can recover a plant's footprint from the replicated model.
+- **`FarmSurface`** — pure placement rules: `project` (click → point on the pad's top face) and `tooClose` (spacing). Shared **so the client's indicator cannot promise a spot the server refuses**. Add new placement rules here, not in either caller.
 
 Server, started in this order by `init.server.luau` (inventory first, the rest award into it):
 
@@ -81,14 +82,22 @@ Server, started in this order by `init.server.luau` (inventory first, the rest a
 
 Client:
 
+- **`MouseTarget`** — the one raycast under the cursor. `PlantingController` and `PlantIndicator` both use it; two separate raycasts could disagree and the preview would lie.
 - **`PlantingController`** — reports where the player clicked while holding a seed.
+- **`PlantIndicator`** — `RenderStepped` preview disc, green where the click will land, red plus a reason where it won't. Cosmetic: it re-checks `FarmSurface` rules for *feedback* and changes no outcome. It cannot preview `MaxPlantsPerPlayer`, which the client has no way to read.
+- **`FruitInspector`** — price card shown while a fruit stack Tool is equipped: unit price, quantity, total value.
+- **`Leaderboard`** — always-visible board ranking players by `Coins`, read straight off each player's `leaderstats`.
 - **`SellDialogue`** — code-built ScreenGui, opened by the seller prompt.
+
+`PlantIndicator`, `FruitInspector` and `Leaderboard` are display-only and each starts behind its own `pcall` in `init.client.luau`. That is deliberate: a require error in a cosmetic module previously killed the whole LocalScript and silently disabled planting.
 
 ### Inventory model
 
 Seeds are **Tools in the Backpack** — that Tool list *is* the seed inventory, so there is no parallel seed counter to drift. `InventoryService.seedCount` therefore counts both the Backpack *and* the character, because an equipped tool moves to the character.
 
 Fruit is a server-side per-species tally (`fruitByPlayer`), mirrored to `leaderstats.Fruit` as a display-only total. Keeping the tally per-species is what lets sales price each fruit correctly; don't collapse it to a single number. Each species also has one generated stack Tool marked with a `FruitName` attribute so the player can equip that produce. The Tool only selects the held species; the server tally remains authoritative. `Sell All` clears every stack, while `Sell Thing That I Hold` sells one unit from the equipped stack.
+
+The stack Tool carries two attributes: `FruitName` (the selector) and `FruitCount` (the held quantity, mirrored for display). **A client must never derive quantity by counting Tools** — there is one Tool per species, so counting always yields 1. `FruitInspector` reads `FruitCount`; anything that pays out reads the tally. Because harvesting more of a species you already hold mutates that Tool rather than adding one, no `ChildAdded` fires — watch `leaderstats.Fruit` for a quantity change instead.
 
 `leaderstats` holds `Fruit` and `Coins` only. **No DataStore persistence** — everything resets on shutdown.
 
@@ -100,6 +109,9 @@ The client sends **only a click position**. Everything else is decided server-si
 - the player must actually hold a seed Tool, be within `MaxPlantDistance`, respect `PlantCooldown`, `MinPlantSpacing` and `MaxPlantsPerPlayer`
 - the seed is consumed **only after every check passes**
 - selling re-checks distance to the seller; the dialogue proves nothing
+- the fruit stack Tool's `FruitName` attribute is **only a selector** — `sellHeldFruit` re-reads quantity and price from server state before paying out
+
+A rejected plant request is otherwise **completely silent**, which makes a failed click undiagnosable. Every gate in `onPlantRequest` now names itself in Output via `refuse`, gated on `Config.Farm.LogPlantRequests`. When you add a rule to `FarmSurface` both sides pick it up; add one only to `PlantingService` and the indicator will show green on a spot that fails.
 
 ### Growth invariants
 
@@ -113,6 +125,10 @@ The client sends **only a click position**. Everything else is decided server-si
 ### Client gotchas
 
 Equipping moves a Tool to the character and unequipping moves it back, so `Backpack.ChildAdded` fires repeatedly for the same tool. `PlantingController` keeps a `watched` set — without it, each equip cycle adds another `Activated` connection and one click plants twice.
+
+**Respawning replaces the Backpack.** Binding to whichever Backpack exists at startup breaks permanently after the first death: seeds land in a container nobody is watching and clicks do nothing, with no error. Re-attach on `Player.ChildAdded` for a new `Backpack` and on `CharacterAdded`. This cost hours to find — it presents exactly as "planting worked, then stopped".
+
+Aim with `Mouse.UnitRay`, not `ViewportPointToRay(mouse.X, mouse.Y)`: `UnitRay` is already the ray through the cursor, so there is no viewport/GUI-inset conversion to get wrong.
 
 ## Luau conventions
 
@@ -137,6 +153,25 @@ A working recipe for the full loop, since driving it by hand is fiddly:
 4. GUI buttons need `user_mouse_input`; get coordinates from the button's `AbsolutePosition` + `AbsoluteSize`.
 
 **MCP round trips can exceed 3 seconds**, so a wait-then-check across two calls cannot prove a 3s timer. To time something, arm a persistent `ChildAdded`/`ChildRemoved` listener that `print`s in one call, act in a second, then read the console.
+
+### When the MCP bridge is down, read the log instead
+
+**Studio writes its whole Output to disk** at `%LOCALAPPDATA%\Roblox\logs\*_Studio_*.log` (newest by `LastWriteTime` is the live session). `print` appears as `[FLog::CreatorOutput]`, `warn` as `[FLog::CreatorWarning]`, each line timestamped in UTC.
+
+This needs no plugin and no bridge, and works when `list_roblox_studios` returns nothing. Grep it for your own `[Service]` tags. A background poll on that file also catches a play test that happens later, which beats asking the user to copy Output back.
+
+To check whether Rojo is connected, look for Studio holding an established socket to port 34872 (`Get-NetTCPConnection`) — an active session keeps a long poll open. To inspect the *place* without Studio, the binary `.rbxl` is parseable: 32-byte header, then 16-byte chunk headers; `INST` chunks give class names and counts, and the `PROP` chunk named `Name` lists instance names in the same order. Chunks are LZ4, or zstd when they start with `28 B5 2F FD`.
+
+### Rojo drops out during play tests
+
+Watch for this in Output:
+
+```
+[Rojo-Warn] Disconnected from an error: Unknown HTTP error:
+            Http requests can only be executed by game server
+```
+
+Studio blocks plugin HTTP in a play-test context, so the plugin gives up and **new code silently stops arriving**. If a change seems to have no effect, check this before doubting the change.
 
 ## Known gaps
 

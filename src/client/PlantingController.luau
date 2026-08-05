@@ -4,53 +4,21 @@
 	Reports where the player clicked while holding a seed.
 
 	This sends a position and nothing else — PlantingService decides whether the
-	point is plantable. Existing plants and belt seeds are excluded from the
-	raycast so you can click "through" them onto the farm pad.
+	point is plantable. The aim comes from MouseTarget, which PlantIndicator also
+	uses, so the preview disc and the click agree on the spot.
 ]]
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Workspace = game:GetService("Workspace")
 
 local Config = require(ReplicatedStorage.Shared.Config)
 local Remotes = require(ReplicatedStorage.Shared.Remotes)
 
-local RAY_LENGTH = 500
+local MouseTarget = require(script.Parent.MouseTarget)
 
 local PlantingController = {}
 
 local player = Players.LocalPlayer
-local mouse = player:GetMouse()
-
-local function raycastFromMouse(): RaycastResult?
-	local camera = Workspace.CurrentCamera
-	if not camera then
-		return nil
-	end
-
-	local ignored: { Instance } = {}
-	if player.Character then
-		table.insert(ignored, player.Character)
-	end
-
-	local plants = Workspace:FindFirstChild(Config.Farm.PlantFolderName)
-	if plants then
-		table.insert(ignored, plants)
-	end
-
-	local beltSeeds = Workspace:FindFirstChild(Config.Conveyor.SeedFolderName)
-	if beltSeeds then
-		table.insert(ignored, beltSeeds)
-	end
-
-	local params = RaycastParams.new()
-	params.FilterType = Enum.RaycastFilterType.Exclude
-	params.FilterDescendantsInstances = ignored
-	params.IgnoreWater = true
-
-	local ray = camera:ViewportPointToRay(mouse.X, mouse.Y)
-	return Workspace:Raycast(ray.Origin, ray.Direction * RAY_LENGTH, params)
-end
 
 -- Equipping moves a tool to the character and unequipping moves it back, so
 -- ChildAdded fires repeatedly for the same tool. Without this set each cycle
@@ -64,10 +32,16 @@ local function watchTool(tool: Tool)
 	watched[tool] = true
 
 	tool.Activated:Connect(function()
-		local hit = raycastFromMouse()
-		if hit then
-			Remotes.event(Remotes.PLANT_SEED):FireServer(hit.Position)
+		local hit = MouseTarget.raycast()
+		if not hit then
+			-- Cursor was over empty sky: there is nothing to report.
+			print("[PlantingController] click hit nothing")
+			return
 		end
+
+		print(("[PlantingController] click hit %s at %s")
+			:format(hit.Instance:GetFullName(), tostring(hit.Position)))
+		Remotes.event(Remotes.PLANT_SEED):FireServer(hit.Position)
 	end)
 
 	tool.Destroying:Connect(function()
@@ -76,8 +50,6 @@ local function watchTool(tool: Tool)
 end
 
 function PlantingController.start()
-	-- Seeds arrive in the Backpack, but an equipped tool moves to the
-	-- character, so watch both containers.
 	local function watchContainer(container: Instance)
 		for _, child in ipairs(container:GetChildren()) do
 			if child:IsA("Tool") then
@@ -91,12 +63,31 @@ function PlantingController.start()
 		end)
 	end
 
+	-- Respawning replaces the Backpack, so binding to whichever one exists at
+	-- startup stops working the first time the player dies: seeds land in a
+	-- Backpack nobody is watching and clicks do nothing, silently. Re-attach on
+	-- every new one instead. The character is watched for the same reason — an
+	-- equipped tool lives there, not in the Backpack.
+	player.ChildAdded:Connect(function(child: Instance)
+		if child:IsA("Backpack") then
+			watchContainer(child)
+		end
+	end)
+	player.CharacterAdded:Connect(watchContainer)
+
 	local backpack = player:WaitForChild("Backpack", 30)
 	if backpack then
 		watchContainer(backpack)
 	else
 		warn("[PlantingController] Backpack never arrived.")
 	end
+
+	local character = player.Character
+	if character then
+		watchContainer(character)
+	end
+
+	print("[PlantingController] watching for seed tools.")
 end
 
 return PlantingController

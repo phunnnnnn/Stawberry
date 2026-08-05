@@ -106,6 +106,15 @@ local Config = {
 		MaxHeld = 20,
 	},
 
+	-- Board ranking players by coins. leaderstats already feeds Roblox's own
+	-- player list; this is the always-visible version of the same numbers.
+	Leaderboard = {
+		Title = "Top Farmers",
+		MaxRows = 8,
+		RowHeight = 24,
+		Width = 210,
+	},
+
 	Farm = {
 		PartName = "Farm",
 		PlantFolderName = "Plants",
@@ -118,6 +127,36 @@ local Config = {
 
 		-- Keep plants off the very lip of the farm pad.
 		EdgeMargin = 2,
+
+		-- Log the outcome of every plant request: the gate that refused it, or the
+		-- plant that resulted. A refusal is otherwise completely silent, so leave
+		-- this on while developing.
+		LogPlantRequests = true,
+	},
+
+	-- Placement preview drawn while a seed is equipped. Cosmetic only — the
+	-- server validates the click regardless of what this shows.
+	Indicator = {
+		-- Disc marking the exact spot the seed would land.
+		MarkerDiameter = 3.2,
+		MarkerThickness = 0.12,
+		MarkerTransparency = 0.25,
+
+		-- Wider disc covering the MinPlantSpacing exclusion zone, so a refused
+		-- spot explains itself.
+		ShowSpacing = true,
+		SpacingThickness = 0.06,
+		SpacingTransparency = 0.82,
+
+		ValidColor = Color3.fromRGB(96, 214, 96),
+		BlockedColor = Color3.fromRGB(214, 74, 74),
+
+		-- Lift above the pad's top face so the discs don't z-fight with it.
+		HoverOffset = 0.06,
+
+		-- Floating text naming the reason a spot is refused.
+		ShowReason = true,
+		ReasonHeight = 3,
 	},
 
 	Seller = {

@@ -29,6 +29,11 @@ local priceIndex: { [string]: number } = {}
 
 local FRUIT_ATTRIBUTE = "FruitName"
 
+-- Held quantity, mirrored onto the stack Tool so the client can display it.
+-- There is exactly one Tool per species, so a client counting Tools would always
+-- see 1; the tally here stays authoritative for anything that pays out.
+local COUNT_ATTRIBUTE = "FruitCount"
+
 local function statsFolder(player: Player): Instance
 	local existing = player:FindFirstChild("leaderstats")
 	if existing then
@@ -155,6 +160,7 @@ local function syncFruitTool(player: Player, fruitName: string)
 	end
 
 	kept.ToolTip = ("Harvested %s x%d"):format(fruitName, count)
+	kept:SetAttribute(COUNT_ATTRIBUTE, count)
 end
 
 local function removeAllFruitTools(player: Player)

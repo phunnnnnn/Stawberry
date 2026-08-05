@@ -58,6 +58,16 @@ function PlantModel.place(model: Model, groundPosition: Vector3)
 	model:PivotTo(CFrame.new(groundPosition + Vector3.new(0, spec.StemHeight / 2, 0)))
 end
 
+-- Inverse of `place`: the ground position a built plant is standing on. Lets
+-- the client recover plant footprints from the replicated models.
+function PlantModel.groundOf(model: Model): Vector3?
+	local spec = Config.Plants[model.Name]
+	if not spec then
+		return nil
+	end
+	return model:GetPivot().Position - Vector3.new(0, spec.StemHeight / 2, 0)
+end
+
 -- World position a fruit should occupy for a plant based at `groundPosition`.
 function PlantModel.fruitPosition(speciesName: string, groundPosition: Vector3): Vector3
 	local spec = Config.Plants[speciesName]

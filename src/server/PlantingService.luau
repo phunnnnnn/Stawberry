@@ -12,6 +12,7 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Config = require(ReplicatedStorage.Shared.Config)
+local FarmSurface = require(ReplicatedStorage.Shared.FarmSurface)
 local PlantModel = require(ReplicatedStorage.Shared.PlantModel)
 local Remotes = require(ReplicatedStorage.Shared.Remotes)
 
@@ -49,37 +50,35 @@ local function equippedSeed(player: Player): Tool?
 	return nil
 end
 
--- Projects a clicked point onto the farm's top face, or nil if it missed.
+-- Projects a clicked point onto the farm's top face, or nil if it missed. The
+-- rule itself lives in FarmSurface so the client's indicator previews exactly
+-- what this accepts.
 local function farmSurfacePoint(position: Vector3): Vector3?
 	local pad = farm
 	if not pad then
 		return nil
 	end
-
-	local localPoint = pad.CFrame:PointToObjectSpace(position)
-	local half = pad.Size / 2
-	local margin = Config.Farm.EdgeMargin
-
-	if math.abs(localPoint.X) > half.X - margin or math.abs(localPoint.Z) > half.Z - margin then
-		return nil
-	end
-
-	-- Reject clicks on the underside or the sides of the pad.
-	if localPoint.Y <= 0 or localPoint.Y > half.Y + 1 then
-		return nil
-	end
-
-	return pad.CFrame * Vector3.new(localPoint.X, half.Y, localPoint.Z)
+	return FarmSurface.project(pad, position)
 end
 
-local function tooCloseToExistingPlant(position: Vector3): boolean
-	local minimum = Config.Farm.MinPlantSpacing
+local function occupiedPositions(): { Vector3 }
+	local positions: { Vector3 } = table.create(#records)
 	for _, record in ipairs(records) do
-		if (record.groundPosition - position).Magnitude < minimum then
-			return true
-		end
+		table.insert(positions, record.groundPosition)
 	end
-	return false
+	return positions
+end
+
+-- Planting and harvesting both refuse by simply returning, which makes a failed
+-- click or prompt impossible to diagnose from inside the game. Naming the reason
+-- costs nothing and puts it in Studio's Output. Declared here rather than beside
+-- onPlantRequest because scheduleFruit's harvest handler needs it too.
+-- Config.Farm.LogPlantRequests silences it.
+local function refuse(player: Player, reason: string, ...: any)
+	if not Config.Farm.LogPlantRequests then
+		return
+	end
+	warn(("[PlantingService] %s: %s"):format(player.Name, reason:format(...)))
 end
 
 local function scheduleFruit(record: PlantRecord)
@@ -115,10 +114,17 @@ local function scheduleFruit(record: PlantRecord)
 				if record.fruit ~= fruit then
 					return
 				end
+
 				record.fruit = nil
 				fruit:Destroy()
 
+				-- The tally always accepts, so there is no capacity case to guard
+				-- here: the stack Tool is reconciled from it, not the reverse.
 				InventoryService.addFruit(player, fruitSpec.Name, 1)
+
+				if Config.Farm.LogPlantRequests then
+					print(("[PlantingService] %s harvested %s"):format(player.Name, fruitSpec.Name))
+				end
 
 				if fruitSpec.Regrow then
 					scheduleFruit(record)
@@ -130,40 +136,50 @@ end
 
 local function onPlantRequest(player: Player, requested: unknown)
 	if typeof(requested) ~= "Vector3" then
+		refuse(player, "payload was %s, not a Vector3", typeof(requested))
 		return
 	end
 	local position = requested :: Vector3
 
 	local now = os.clock()
 	if now - (lastPlantAt[player] or 0) < Config.Farm.PlantCooldown then
+		refuse(player, "still on cooldown (%.2fs)", Config.Farm.PlantCooldown)
 		return
 	end
 
 	local character = player.Character
 	local root = character and character.PrimaryPart
 	if not root then
+		refuse(player, "no character or no PrimaryPart")
 		return
 	end
 
 	local tool = equippedSeed(player)
 	if not tool then
+		refuse(player, "no %q Tool equipped — it must be held, not just carried", Config.Seed.ToolName)
 		return
 	end
 
 	if (plantCounts[player] or 0) >= Config.Farm.MaxPlantsPerPlayer then
+		refuse(player, "at the %d plant limit", Config.Farm.MaxPlantsPerPlayer)
 		return
 	end
 
 	local ground = farmSurfacePoint(position)
 	if not ground then
+		refuse(player, "%s is not on the farm's top face (or is inside the %d stud edge margin)",
+			tostring(position), Config.Farm.EdgeMargin)
 		return
 	end
 
 	if (root.Position - ground).Magnitude > Config.Farm.MaxPlantDistance then
+		refuse(player, "%.1f studs away, limit is %d",
+			(root.Position - ground).Magnitude, Config.Farm.MaxPlantDistance)
 		return
 	end
 
-	if tooCloseToExistingPlant(ground) then
+	if FarmSurface.tooClose(ground, occupiedPositions()) then
+		refuse(player, "within %d studs of an existing plant", Config.Farm.MinPlantSpacing)
 		return
 	end
 
@@ -192,6 +208,18 @@ local function onPlantRequest(player: Player, requested: unknown)
 		growing = false,
 	}
 	table.insert(records, record)
+
+	if Config.Farm.LogPlantRequests then
+		-- Reports the parent too: assigning a nil parent is legal and would leave
+		-- the plant out of the world, invisible, with nothing raised.
+		print(("[PlantingService] %s planted %s at %s under %s (%d total)"):format(
+			player.Name,
+			species,
+			tostring(ground),
+			if model.Parent then model.Parent:GetFullName() else "NOTHING — the model is not in the world",
+			plantCounts[player] or 0
+		))
+	end
 
 	scheduleFruit(record)
 end

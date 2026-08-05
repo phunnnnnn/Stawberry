@@ -30,9 +30,10 @@ place.
 ## The loop
 
 1. The conveyor at `Workspace.Conveyor` produces seeds. Press **E** to collect one — it goes into your Backpack.
-2. Equip the seed and **click the farm** to plant a strawberry.
+2. Equip the seed and **click the farm** to plant a strawberry. A disc follows your cursor: green means the click will land, red names what's wrong (too close to another plant, off the edge, too far away).
 3. Fruit appears after 3 seconds. Press **E** to harvest it; the plant bears again and the fruit appears as an equippable stack Tool.
-4. Take fruit to `Workspace.Seller` and press **E** to choose **Sell All**, **Sell Thing That I Hold**, or **Nevermind**.
+4. Equip that stack to inspect it — a card shows the unit price, how many you hold and what the lot is worth.
+5. Take fruit to `Workspace.Seller` and press **E** to choose **Sell All**, **Sell Thing That I Hold**, or **Nevermind**. Coins are ranked on the leaderboard, top left.
 
 Tuning for all of the above lives in `src/shared/Config.luau`.
 
