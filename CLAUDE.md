@@ -22,6 +22,8 @@ Studio opens `place/Stawberry.rbxl` directly; Ctrl+S writes back to that file.
 
 After `rojo serve`, someone must click **Connect** in Studio's Rojo panel. That is a plugin widget and cannot be automated — ask the user to click it.
 
+Studio's MCP server is likewise a toggle inside Studio: **Assistant → … → Manage MCP Servers → "Enable Studio as MCP server"**. It is Studio's *built-in* server (`StudioMCP.exe`, shipped in the Studio version folder), not a plugin — the standalone `Roblox/studio-rust-mcp-server` is archived, so there is no `MCPStudioPlugin.rbxm` to install and looking for one is a dead end. `list_roblox_studios` returning nothing almost always means that toggle is off.
+
 There is **no test framework and no linter configured**. Verification is done by play-testing through the Roblox Studio MCP. Don't invent a test command.
 
 ## Two sources of truth — read this before editing anything
@@ -144,6 +146,12 @@ This is the primary way to verify changes:
 - `execute_luau` requires `datamodel_type`: `Edit` in edit mode, `Server`/`Client` during play.
 - `start_stop_play` enters/exits the play test; `get_console_output` reads the log.
 - `screen_capture` renders the viewport, and does include ScreenGui and proximity prompts — but never Studio's own toolbars, Explorer, or the Rojo panel.
+
+### `execute_luau` requires get their own module cache
+
+**A module required from `execute_luau` is a *separate instance* from the one the running `ServerScriptService.Server` scripts hold.** Mutating server state through it diverges the two copies: calling `InventoryService.addFruit` from MCP bumped *its* tally, wrote `leaderstats` and the Tool attribute, while `SellService`'s copy still saw zero and refused the sale. That looks exactly like a product bug and is not one.
+
+So state injected this way is a lie. Side effects on real Instances (creating a Tool, moving a character) *are* shared and safe — it is only module-local tables that split. To exercise anything stateful, drive the real path: fire the remote, or trigger the prompt with `user_keyboard_input`.
 
 A working recipe for the full loop, since driving it by hand is fiddly:
 

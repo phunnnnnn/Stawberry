@@ -29,7 +29,7 @@ local function nearSeller(player: Player): boolean
 	return (root.Position - stall.Position).Magnitude <= Config.Seller.MaxSellDistance
 end
 
-local function onSellRequest(player: Player, mode: unknown): InventoryService.SaleResult
+local function resolveSale(player: Player, mode: unknown): InventoryService.SaleResult
 	if not nearSeller(player) then
 		return { sold = 0, earned = 0, reason = "Move closer to the seller." }
 	end
@@ -41,6 +41,25 @@ local function onSellRequest(player: Player, mode: unknown): InventoryService.Sa
 		return { sold = 0, earned = 0, reason = "Unknown sale option." }
 	end
 	return InventoryService.sellAllFruit(player)
+end
+
+-- A refused sale only ever surfaced in the player's own dialogue, so from
+-- outside the game a failed sale was indistinguishable from one nobody tried.
+-- Config.Seller.LogSales silences this.
+local function onSellRequest(player: Player, mode: unknown): InventoryService.SaleResult
+	local result = resolveSale(player, mode)
+
+	if Config.Seller.LogSales then
+		if result.sold > 0 then
+			print(("[SellService] %s sold %d %s for %d coins."):format(
+				player.Name, result.sold, result.itemName or "fruit", result.earned))
+		else
+			warn(("[SellService] %s sale refused (mode %s): %s"):format(
+				player.Name, tostring(mode), result.reason or "no reason given"))
+		end
+	end
+
+	return result
 end
 
 function SellService.start()

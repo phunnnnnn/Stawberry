@@ -165,6 +165,10 @@ local Config = {
 
 		-- Server re-checks this when a sale is submitted.
 		MaxSellDistance = 30,
+
+		-- Log every sale and every refusal in Output. A refused sale otherwise
+		-- only appears in the player's dialogue.
+		LogSales = true,
 	},
 
 	Plants = Plants,
