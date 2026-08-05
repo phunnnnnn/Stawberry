@@ -7,6 +7,11 @@
 *.rbxlx.lock
 /build/
 
+# ...but the committed map is the exception. The Workspace geometry lives in
+# the place file, so it is versioned here deliberately. Export it with
+# File > Save As in Studio. Binary, so expect no useful diffs.
+!/place/Stawberry.rbxl
+
 # Wally packages
 /Packages/
 /DevPackages/
