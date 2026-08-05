@@ -1,0 +1,30 @@
+#!/bin/sh
+#
+# Keeps the Studio place file in every commit.
+#
+# The Workspace geometry lives in place/Stawberry.rbxl and Rojo does not sync
+# it, so a commit without it records code changes against a stale map.
+
+PLACE="place/Stawberry.rbxl"
+
+if [ ! -f "$PLACE" ]; then
+	echo "pre-commit: $PLACE not found — the map is NOT in this commit."
+	echo "            Save it from Studio with File > Save As to create it."
+	# Warn only. Blocking would make the repo uncommittable before the first
+	# export exists.
+	exit 0
+fi
+
+# -f because .gitignore excludes *.rbxl broadly; the place file is the one
+# deliberate exception and must be staged even if the negation rule changes.
+git add -f "$PLACE"
+
+# A place file older than the newest source change usually means Studio still
+# has unsaved geometry.
+stale_against=$(find src -type f -newer "$PLACE" 2>/dev/null | head -n 1)
+if [ -n "$stale_against" ]; then
+	echo "pre-commit: WARNING — $PLACE is older than $stale_against"
+	echo "            If you changed geometry, save in Studio (Ctrl+S) and amend."
+fi
+
+exit 0

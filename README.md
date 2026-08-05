@@ -5,19 +5,27 @@ A Roblox farming/tycoon game synced with [Rojo](https://rojo.space).
 ## Setup
 
 ```sh
-aftman install       # installs the pinned rojo version
-rojo plugin install  # installs the Rojo plugin into Roblox Studio
+aftman install                       # installs the pinned rojo version
+git config core.hooksPath .githooks  # keeps the place file in every commit
+rojo plugin install                  # installs the Rojo plugin into Roblox Studio
 ```
 
 ## Workflow
 
-Start the sync server, then hit **Connect** in the Rojo panel inside Studio:
+Open `place/Stawberry.rbxl` in Studio, start the sync server, then hit
+**Connect** in the Rojo panel:
 
 ```sh
 rojo serve
 ```
 
-Edits to files under `src/` now flow into Studio live.
+Edits to files under `src/` now flow into Studio live. Geometry you build in
+Studio is saved with Ctrl+S straight into the place file.
+
+**Save in Studio before you commit.** The `pre-commit` hook stages the place
+file for you and warns if it looks stale, but it cannot save Studio for you.
+Local saves stay local — use **File > Publish to Roblox** to update the live
+place.
 
 ## The loop
 
@@ -38,12 +46,13 @@ Tuning for all of the above lives in `src/shared/Config.luau`.
 
 ## The map is not in `src/`
 
-Rojo syncs the scripts only. The Workspace geometry lives in the Studio place
-itself, so `rojo build` produces a **scripts-only** place with no map:
+Rojo syncs the scripts only. The Workspace geometry lives in
+`place/Stawberry.rbxl`, so `rojo build` produces a **scripts-only** place with
+no map:
 
 ```sh
 rojo build -o build/Stawberry.rbxlx
 ```
 
-To version the map, export it from Studio with **File > Save As** to
-`place/Stawberry.rbxl` — `.gitignore` already makes that one path an exception.
+That output is useful for checking the script tree, not for playing the game.
+Open the committed place file for that.

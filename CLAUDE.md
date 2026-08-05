@@ -10,10 +10,13 @@ A Roblox tycoon-style game ("Stawberry" — the misspelling is the project name)
 
 ```sh
 aftman install                       # required after clone — installs pinned rojo
+git config core.hooksPath .githooks  # required after clone — enables the place-file hook
 rojo serve                           # sync server on port 34872
 rojo build -o build/Stawberry.rbxlx  # scripts only, see caveat below
 rojo plugin install                  # install/refresh the Rojo Studio plugin
 ```
+
+Studio opens `place/Stawberry.rbxl` directly; Ctrl+S writes back to that file.
 
 `rojo` is an Aftman shim. Without `aftman install` it fails with *"no aftman.toml files list this tool"* — that is a missing toolchain, not a broken install.
 
@@ -23,15 +26,21 @@ There is **no test framework and no linter configured**. Verification is done by
 
 ## Two sources of truth — read this before editing anything
 
-Rojo owns **only** the three script branches. All Workspace geometry lives in the Studio place, which is a **cloud place** (`PlaceId 113158059729469`) — not a file on disk:
+Rojo owns **only** the three script branches. All Workspace geometry lives in the place file at **`place/Stawberry.rbxl`**, which is committed to this repo:
 
 `Baseplate`, `SpawnLocation`, `Farm`, `Fatory`, `Worker`, `Seller`, `Conveyor{Part, Part, conveyor}`
 
-Consequences:
+### Always commit the place file with code changes
+
+The map and the code must move together, or a checkout pairs new scripts with an old map. `.githooks/pre-commit` force-stages `place/Stawberry.rbxl` on every commit and warns when it looks older than `src/`.
+
+The hook cannot flush unsaved Studio state to disk. **Before committing anything that touched geometry, tell the user to save in Studio (Ctrl+S)** — otherwise the staged place file is stale and the warning is the only signal.
+
+### Other consequences
 
 - `rojo build` output contains **no map** — scripts only. It is not a playable place.
-- Geometry changed via MCP in Edit mode is lost unless the user saves in Studio. Always tell them to save.
-- The map is backed up by Roblox's own version history, but a fresh `git clone` gets no geometry.
+- Geometry changed via MCP in Edit mode exists only in memory until the user saves. Always tell them to save.
+- The place began as a cloud place (`PlaceId 113158059729469`) and was moved to a local file. Local saves do **not** reach Roblox — that needs **File > Publish to Roblox**.
 - `Fatory` is a typo for "Factory" but is load-bearing — grep for the name before renaming.
 - Part positions drift between sessions because the user edits the place directly. **Never trust a coordinate recorded in this file or in conversation history — re-read it from the live place.**
 
