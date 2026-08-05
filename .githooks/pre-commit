@@ -4,6 +4,12 @@
 #
 # The Workspace geometry lives in place/Stawberry.rbxl and Rojo does not sync
 # it, so a commit without it records code changes against a stale map.
+#
+# LIMITATION: this hook can only augment a commit that already has something
+# staged. Git decides "nothing added to commit" before honouring what the hook
+# adds to the index, so when a Studio save is the *only* change, `git commit`
+# aborts anyway — leaving the place file staged. Prefer `git add -A` (the
+# .gitignore negation picks the place file up) or stage it explicitly.
 
 PLACE="place/Stawberry.rbxl"
 

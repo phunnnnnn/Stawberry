@@ -32,7 +32,9 @@ Rojo owns **only** the three script branches. All Workspace geometry lives in th
 
 ### Always commit the place file with code changes
 
-The map and the code must move together, or a checkout pairs new scripts with an old map. `.githooks/pre-commit` force-stages `place/Stawberry.rbxl` on every commit and warns when it looks older than `src/`.
+The map and the code must move together, or a checkout pairs new scripts with an old map. `.githooks/pre-commit` force-stages `place/Stawberry.rbxl` and warns when it looks older than `src/`.
+
+**Use `git add -A` before committing.** The `.gitignore` negation means that picks up the place file. The hook can only *augment* a commit that already has something staged — git decides "nothing added to commit" before honouring the hook's index changes, so when a Studio save is the only change `git commit` aborts anyway, leaving the file staged. Stage it yourself in that case.
 
 The hook cannot flush unsaved Studio state to disk. **Before committing anything that touched geometry, tell the user to save in Studio (Ctrl+S)** — otherwise the staged place file is stale and the warning is the only signal.
 
