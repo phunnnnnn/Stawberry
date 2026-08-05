@@ -88,7 +88,7 @@ Client:
 
 Seeds are **Tools in the Backpack** — that Tool list *is* the seed inventory, so there is no parallel seed counter to drift. `InventoryService.seedCount` therefore counts both the Backpack *and* the character, because an equipped tool moves to the character.
 
-Fruit is a server-side per-species tally (`fruitByPlayer`), mirrored to `leaderstats.Fruit` as a display-only total. Keeping the tally per-species is what lets sales price each fruit correctly; don't collapse it to a single number.
+Fruit is a server-side per-species tally (`fruitByPlayer`), mirrored to `leaderstats.Fruit` as a display-only total. Keeping the tally per-species is what lets sales price each fruit correctly; don't collapse it to a single number. Each species also has one generated stack Tool marked with a `FruitName` attribute so the player can equip that produce. The Tool only selects the held species; the server tally remains authoritative. `Sell All` clears every stack, while `Sell Thing That I Hold` sells one unit from the equipped stack.
 
 `leaderstats` holds `Fruit` and `Coins` only. **No DataStore persistence** — everything resets on shutdown.
 

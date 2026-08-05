@@ -6,7 +6,9 @@
 	Seeds live in the Backpack as Tools — that Tool list *is* the seed
 	inventory, so there is no parallel seed counter to drift out of sync.
 	Fruit is a server-side per-species tally, mirrored to leaderstats as a
-	single total for display. Coins are the sale payout.
+	single total for display. Each species also gets one stack Tool so the
+	player can equip that produce and sell one held item at the Seller. The
+	server tally remains authoritative. Coins are the sale payout.
 
 	No persistence: everything resets when the server shuts down.
 ]]
@@ -24,6 +26,8 @@ local fruitByPlayer: { [Player]: { [string]: number } } = {}
 
 -- Fruit name -> sale price, indexed from Config.Plants once at startup.
 local priceIndex: { [string]: number } = {}
+
+local FRUIT_ATTRIBUTE = "FruitName"
 
 local function statsFolder(player: Player): Instance
 	local existing = player:FindFirstChild("leaderstats")
@@ -72,6 +76,116 @@ end
 
 local function syncFruitStat(player: Player)
 	statValue(player, "Fruit").Value = totalFruit(player)
+end
+
+local function fruitContainers(player: Player): { Instance }
+	local containers: { Instance } = {}
+	local backpack = player:FindFirstChildOfClass("Backpack")
+	if backpack then
+		table.insert(containers, backpack)
+	end
+	if player.Character then
+		table.insert(containers, player.Character)
+	end
+	return containers
+end
+
+local function createFruitTool(fruitName: string): Tool?
+	local spec: Config.FruitSpec? = nil
+	for _, plantSpec in pairs(Config.Plants) do
+		if plantSpec.Fruit and plantSpec.Fruit.Name == fruitName then
+			spec = plantSpec.Fruit
+			break
+		end
+	end
+	if not spec then
+		return nil
+	end
+
+	local tool = Instance.new("Tool")
+	tool.Name = fruitName
+	tool.RequiresHandle = true
+	tool.CanBeDropped = false
+	tool:SetAttribute(FRUIT_ATTRIBUTE, fruitName)
+
+	local handle = Instance.new("Part")
+	handle.Name = "Handle"
+	handle.Shape = Enum.PartType.Ball
+	handle.Size = spec.Size
+	handle.Color = spec.Color
+	handle.Material = Enum.Material.SmoothPlastic
+	handle.Massless = true
+	handle.CanCollide = false
+	handle.CanTouch = false
+	handle.Parent = tool
+
+	return tool
+end
+
+-- Keep exactly one Tool per fruit species. It represents the server-owned
+-- stack, not a second inventory counter.
+local function syncFruitTool(player: Player, fruitName: string)
+	local count = fruitTable(player)[fruitName] or 0
+	local kept: Tool? = nil
+
+	for _, container in ipairs(fruitContainers(player)) do
+		for _, child in ipairs(container:GetChildren()) do
+			if child:IsA("Tool") and child:GetAttribute(FRUIT_ATTRIBUTE) == fruitName then
+				if count > 0 and not kept then
+					kept = child
+				else
+					child:Destroy()
+				end
+			end
+		end
+	end
+
+	if count <= 0 then
+		return
+	end
+
+	if not kept then
+		local created = createFruitTool(fruitName)
+		local backpack = player:FindFirstChildOfClass("Backpack")
+		if not (created and backpack) then
+			return
+		end
+		created.Parent = backpack
+		kept = created
+	end
+
+	kept.ToolTip = ("Harvested %s x%d"):format(fruitName, count)
+end
+
+local function removeAllFruitTools(player: Player)
+	for _, container in ipairs(fruitContainers(player)) do
+		for _, child in ipairs(container:GetChildren()) do
+			if child:IsA("Tool") and typeof(child:GetAttribute(FRUIT_ATTRIBUTE)) == "string" then
+				child:Destroy()
+			end
+		end
+	end
+end
+
+local function syncAllFruitTools(player: Player)
+	for fruitName, count in pairs(fruitTable(player)) do
+		if count > 0 then
+			syncFruitTool(player, fruitName)
+		end
+	end
+end
+
+local function equippedFruitTool(player: Player): Tool?
+	local character = player.Character
+	if not character then
+		return nil
+	end
+	for _, child in ipairs(character:GetChildren()) do
+		if child:IsA("Tool") and typeof(child:GetAttribute(FRUIT_ATTRIBUTE)) == "string" then
+			return child
+		end
+	end
+	return nil
 end
 
 -- Safe to call repeatedly; used on join and again on every award.
@@ -126,11 +240,14 @@ function InventoryService.addFruit(player: Player, fruitName: string, count: num
 	local fruit = fruitTable(player)
 	fruit[fruitName] = (fruit[fruitName] or 0) + count
 	syncFruitStat(player)
+	syncFruitTool(player, fruitName)
 end
 
 export type SaleResult = {
 	sold: number,
 	earned: number,
+	itemName: string?,
+	reason: string?,
 }
 
 -- Clears the player's fruit and pays out at per-species prices.
@@ -147,14 +264,45 @@ function InventoryService.sellAllFruit(player: Player): SaleResult
 	end
 
 	if sold == 0 then
-		return { sold = 0, earned = 0 }
+		return { sold = 0, earned = 0, reason = "You have no fruit to sell." }
 	end
 
 	fruitByPlayer[player] = {}
 	syncFruitStat(player)
+	removeAllFruitTools(player)
 	statValue(player, "Coins").Value += earned
 
 	return { sold = sold, earned = earned }
+end
+
+-- Sells one unit from the fruit stack Tool currently equipped by the player.
+-- The Tool attribute is only a selector; quantity and price are validated from
+-- server-owned state before anything is paid out.
+function InventoryService.sellHeldFruit(player: Player): SaleResult
+	local tool = equippedFruitTool(player)
+	if not tool then
+		return { sold = 0, earned = 0, reason = "Hold harvested fruit in your hand first." }
+	end
+
+	local fruitNameValue = tool:GetAttribute(FRUIT_ATTRIBUTE)
+	if typeof(fruitNameValue) ~= "string" then
+		return { sold = 0, earned = 0, reason = "That item cannot be sold." }
+	end
+	local fruitName = fruitNameValue :: string
+	local fruit = fruitTable(player)
+	local count = fruit[fruitName] or 0
+	local price = priceIndex[fruitName]
+	if count <= 0 or not price then
+		syncFruitTool(player, fruitName)
+		return { sold = 0, earned = 0, reason = "That fruit is not in your inventory." }
+	end
+
+	fruit[fruitName] = count - 1
+	syncFruitStat(player)
+	syncFruitTool(player, fruitName)
+	statValue(player, "Coins").Value += price
+
+	return { sold = 1, earned = price, itemName = fruitName }
 end
 
 function InventoryService.start()
@@ -165,10 +313,22 @@ function InventoryService.start()
 		end
 	end
 
-	for _, player in ipairs(Players:GetPlayers()) do
+	local function setupPlayer(player: Player)
 		InventoryService.setup(player)
+		player.CharacterAdded:Connect(function()
+			-- Roblox may replace the Backpack on respawn. Recreate the visual
+			-- stack Tools from the authoritative fruit tally after it arrives.
+			task.defer(function()
+				player:WaitForChild("Backpack", 10)
+				syncAllFruitTools(player)
+			end)
+		end)
 	end
-	Players.PlayerAdded:Connect(InventoryService.setup)
+
+	for _, player in ipairs(Players:GetPlayers()) do
+		setupPlayer(player)
+	end
+	Players.PlayerAdded:Connect(setupPlayer)
 	Players.PlayerRemoving:Connect(function(player: Player)
 		fruitByPlayer[player] = nil
 	end)

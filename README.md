@@ -31,8 +31,8 @@ place.
 
 1. The conveyor at `Workspace.Conveyor` produces seeds. Press **E** to collect one — it goes into your Backpack.
 2. Equip the seed and **click the farm** to plant a strawberry.
-3. Fruit appears after 3 seconds. Press **E** to harvest it; the plant bears again.
-4. Take fruit to `Workspace.Seller` and press **E** to open the sell dialogue.
+3. Fruit appears after 3 seconds. Press **E** to harvest it; the plant bears again and the fruit appears as an equippable stack Tool.
+4. Take fruit to `Workspace.Seller` and press **E** to choose **Sell All**, **Sell Thing That I Hold**, or **Nevermind**.
 
 Tuning for all of the above lives in `src/shared/Config.luau`.
 

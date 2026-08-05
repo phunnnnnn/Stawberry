@@ -29,9 +29,16 @@ local function nearSeller(player: Player): boolean
 	return (root.Position - stall.Position).Magnitude <= Config.Seller.MaxSellDistance
 end
 
-local function onSellRequest(player: Player): InventoryService.SaleResult
+local function onSellRequest(player: Player, mode: unknown): InventoryService.SaleResult
 	if not nearSeller(player) then
-		return { sold = 0, earned = 0 }
+		return { sold = 0, earned = 0, reason = "Move closer to the seller." }
+	end
+
+	if mode == "held" then
+		return InventoryService.sellHeldFruit(player)
+	end
+	if mode ~= nil and mode ~= "all" then
+		return { sold = 0, earned = 0, reason = "Unknown sale option." }
 	end
 	return InventoryService.sellAllFruit(player)
 end

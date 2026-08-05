@@ -3,9 +3,9 @@
 --[[
 	Sell dialogue, opened by the Seller's proximity prompt.
 
-	The prompt lives on the server-created part, but Triggered also fires
-	locally, so the dialogue opens without a round trip. The sale itself is a
-	server call — this UI only displays what the server reports back.
+	The client chooses one of three actions: sell every harvested fruit, sell
+	one unit of the fruit stack currently equipped, or close the dialogue. The
+	server validates distance, ownership, quantity, and price before payout.
 ]]
 
 local Players = game:GetService("Players")
@@ -22,9 +22,17 @@ local player = Players.LocalPlayer
 local gui: ScreenGui
 local fruitLabel: TextLabel
 local statusLabel: TextLabel
-local sellButton: TextButton
+local sellAllButton: TextButton
+local sellHeldButton: TextButton
 
 local busy = false
+
+type SaleResponse = {
+	sold: number,
+	earned: number,
+	itemName: string?,
+	reason: string?,
+}
 
 local function fruitCount(): number
 	local stats = player:FindFirstChild("leaderstats")
@@ -41,16 +49,91 @@ local function unitPrice(): number
 	return if fruitSpec then fruitSpec.SellPrice else 0
 end
 
+local function heldFruitName(): string?
+	local character = player.Character
+	if not character then
+		return nil
+	end
+	for _, child in ipairs(character:GetChildren()) do
+		if child:IsA("Tool") then
+			local fruitName = child:GetAttribute("FruitName")
+			if typeof(fruitName) == "string" then
+				return fruitName
+			end
+		end
+	end
+	return nil
+end
+
 local function refresh()
 	local count = fruitCount()
 	local price = unitPrice()
+	local held = heldFruitName()
 
 	fruitLabel.Text = ("Fruit: %d    Value: %d coins"):format(count, count * price)
-	sellButton.Text = if count > 0 then ("Sell All (%d)"):format(count) else "Nothing to sell"
-	sellButton.AutoButtonColor = count > 0
-	sellButton.BackgroundColor3 = if count > 0
+
+	sellAllButton.Text = if count > 0 then ("Sell All (%d)"):format(count) else "Sell All (Nothing to sell)"
+	sellAllButton.Active = count > 0
+	sellAllButton.AutoButtonColor = count > 0
+	sellAllButton.BackgroundColor3 = if count > 0
 		then Color3.fromRGB(58, 132, 74)
 		else Color3.fromRGB(70, 70, 78)
+
+	sellHeldButton.Text = if held
+		then ("Sell Thing That I Hold (%s)"):format(held)
+		else "Sell Thing That I Hold"
+	sellHeldButton.Active = held ~= nil
+	sellHeldButton.AutoButtonColor = held ~= nil
+	sellHeldButton.BackgroundColor3 = if held
+		then Color3.fromRGB(63, 105, 166)
+		else Color3.fromRGB(70, 70, 78)
+end
+
+local function requestSale(mode: string, button: TextButton)
+	if busy or not button.Active then
+		return
+	end
+	busy = true
+	button.Text = "Selling..."
+
+	local ok, result = pcall(function()
+		return Remotes.func(Remotes.SELL_FRUIT):InvokeServer(mode)
+	end)
+
+	busy = false
+	local sale = if ok and typeof(result) == "table" then result :: SaleResponse else nil
+
+	if sale and sale.sold > 0 then
+		statusLabel.TextColor3 = Color3.fromRGB(140, 200, 150)
+		if sale.itemName then
+			statusLabel.Text = ("Sold 1 %s for %d coins."):format(sale.itemName, sale.earned)
+		else
+			statusLabel.Text = ("Sold %d fruit for %d coins."):format(sale.sold, sale.earned)
+		end
+	else
+		statusLabel.TextColor3 = Color3.fromRGB(210, 140, 140)
+		statusLabel.Text = if sale and sale.reason then sale.reason else "Sale failed. Please try again."
+	end
+
+	refresh()
+end
+
+local function makeButton(parent: Instance, order: number, text: string, height: number): TextButton
+	local button = Instance.new("TextButton")
+	button.LayoutOrder = order
+	button.Size = UDim2.new(1, 0, 0, height)
+	button.BorderSizePixel = 0
+	button.Font = Enum.Font.GothamMedium
+	button.TextSize = 16
+	button.TextColor3 = Color3.fromRGB(255, 255, 255)
+	button.Text = text
+	button.Parent = parent
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 6)
+	corner.Parent = button
+
+	return button
 end
 
 local function build()
@@ -62,7 +145,7 @@ local function build()
 	gui.Parent = player:WaitForChild("PlayerGui")
 
 	local panel = Instance.new("Frame")
-	panel.Size = UDim2.fromOffset(340, 190)
+	panel.Size = UDim2.fromOffset(360, 300)
 	panel.Position = UDim2.fromScale(0.5, 0.5)
 	panel.AnchorPoint = Vector2.new(0.5, 0.5)
 	panel.BackgroundColor3 = Color3.fromRGB(28, 28, 34)
@@ -119,63 +202,23 @@ local function build()
 	statusLabel.Text = ""
 	statusLabel.Parent = panel
 
-	sellButton = Instance.new("TextButton")
-	sellButton.LayoutOrder = 4
-	sellButton.Size = UDim2.new(1, 0, 0, 38)
-	sellButton.BorderSizePixel = 0
-	sellButton.Font = Enum.Font.GothamMedium
-	sellButton.TextSize = 16
-	sellButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-	sellButton.Text = "Sell All"
-	sellButton.Parent = panel
+	sellAllButton = makeButton(panel, 4, "Sell All", 38)
+	sellHeldButton = makeButton(panel, 5, "Sell Thing That I Hold", 38)
+	local nevermindButton = makeButton(panel, 6, "Nevermind", 30)
+	nevermindButton.BackgroundColor3 = Color3.fromRGB(52, 52, 60)
+	nevermindButton.Font = Enum.Font.Gotham
+	nevermindButton.TextSize = 14
 
-	local sellCorner = Instance.new("UICorner")
-	sellCorner.CornerRadius = UDim.new(0, 6)
-	sellCorner.Parent = sellButton
-
-	local closeButton = Instance.new("TextButton")
-	closeButton.LayoutOrder = 5
-	closeButton.Size = UDim2.new(1, 0, 0, 30)
-	closeButton.BorderSizePixel = 0
-	closeButton.BackgroundColor3 = Color3.fromRGB(52, 52, 60)
-	closeButton.Font = Enum.Font.Gotham
-	closeButton.TextSize = 14
-	closeButton.TextColor3 = Color3.fromRGB(215, 215, 225)
-	closeButton.Text = "Close"
-	closeButton.Parent = panel
-
-	local closeCorner = Instance.new("UICorner")
-	closeCorner.CornerRadius = UDim.new(0, 6)
-	closeCorner.Parent = closeButton
-
-	closeButton.MouseButton1Click:Connect(function()
+	nevermindButton.MouseButton1Click:Connect(function()
 		gui.Enabled = false
 	end)
 
-	sellButton.MouseButton1Click:Connect(function()
-		if busy or fruitCount() == 0 then
-			return
-		end
-		busy = true
-		sellButton.Text = "Selling..."
+	sellAllButton.MouseButton1Click:Connect(function()
+		requestSale("all", sellAllButton)
+	end)
 
-		local ok, result = pcall(function()
-			return Remotes.func(Remotes.SELL_FRUIT):InvokeServer()
-		end)
-
-		busy = false
-
-		local sale = if ok and typeof(result) == "table" then result :: { sold: number, earned: number } else nil
-
-		if sale and sale.sold > 0 then
-			statusLabel.TextColor3 = Color3.fromRGB(140, 200, 150)
-			statusLabel.Text = ("Sold %d for %d coins."):format(sale.sold, sale.earned)
-		else
-			statusLabel.TextColor3 = Color3.fromRGB(210, 140, 140)
-			statusLabel.Text = "Sale failed — move closer to the seller."
-		end
-
-		refresh()
+	sellHeldButton.MouseButton1Click:Connect(function()
+		requestSale("held", sellHeldButton)
 	end)
 end
 
@@ -206,7 +249,7 @@ function SellDialogue.start()
 
 	local prompt = stall:WaitForChild("SellPrompt", 30)
 	if not (prompt and prompt:IsA("ProximityPrompt")) then
-		warn("[SellDialogue] SellPrompt missing — is SellService running?")
+		warn("[SellDialogue] SellPrompt missing - is SellService running?")
 		return
 	end
 

@@ -17,6 +17,9 @@
 /DevPackages/
 /ServerPackages/
 
+# Graphify generated knowledge graph artifacts
+graphify-out/
+
 # Editor / OS
 .DS_Store
 Thumbs.db
