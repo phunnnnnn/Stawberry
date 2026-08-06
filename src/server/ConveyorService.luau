@@ -1,8 +1,18 @@
 --!strict
 
 --[[
-	Spawns placeholder seeds at one end of Workspace.Conveyor, slides them to
-	the other end, and lets players collect them with a proximity prompt.
+	Spawns seeds at one end of Workspace.Conveyor, slides them down the middle
+	of it to the other end, and sells them to players through a proximity
+	prompt.
+
+	The belt is the shop. Each seed is rolled from Config.SpeciesOrder, so all
+	eighteen species come past in one queue, and each carries its own price —
+	so what arrives next is luck and what you take is a decision. A seed nobody
+	can afford simply rides off the end.
+
+	One lane, down the centreline: the stream is a single file rather than a
+	scatter, so the seed under the prompt is unambiguous and the one behind it
+	is readable while you decide.
 
 	Seed positions are computed in the belt's *local* space, so the whole rig
 	can be moved or rotated in Studio and the flow follows it.
@@ -18,8 +28,8 @@ local InventoryService = require(script.Parent.InventoryService)
 
 type SeedRecord = {
 	part: BasePart,
+	species: string,
 	offset: number, -- position along the belt's local Z axis
-	lane: number, -- sideways offset from the belt centreline
 	claimed: boolean,
 }
 
@@ -43,8 +53,10 @@ local function cframeFor(record: SeedRecord): CFrame
 		return CFrame.new()
 	end
 
+	-- Dead centre of the belt: the lateral term is zero rather than absent, so
+	-- the one place a seed's position is computed still shows all three axes.
 	return activeBelt.CFrame
-		* CFrame.new(record.lane, surfaceOffset, record.offset)
+		* CFrame.new(0, surfaceOffset, record.offset)
 		* CFrame.Angles(record.offset * Config.Conveyor.SpinRate, 0, 0)
 end
 
@@ -54,23 +66,49 @@ local function collect(player: Player, record: SeedRecord)
 		return
 	end
 
-	-- Backpack at capacity: leave the seed riding rather than destroying it,
-	-- so nothing is silently lost.
-	if not InventoryService.grantSeed(player) then
+	-- Refused — too poor, or no room. Leave the seed riding rather than
+	-- destroying it: it is still for sale to whoever can afford it, and nothing
+	-- the player paid for has gone anywhere.
+	local bought, reason = InventoryService.buySeed(player, record.species)
+	if not bought then
+		if Config.Conveyor.LogPurchases then
+			-- Named by the part, not by the species, so a log line greps against
+			-- what is actually in Workspace — and no article has to agree with
+			-- eighteen species.
+			warn(("[ConveyorService] %s could not buy %s: %s")
+				:format(player.Name, record.part.Name, reason or "unknown"))
+		end
 		return
 	end
 
+	local label = record.part.Name
 	record.claimed = true
 	record.part:Destroy()
+
+	if Config.Conveyor.LogPurchases then
+		print(("[ConveyorService] %s bought %s for %d coins")
+			:format(player.Name, label, Seed.price(record.species)))
+	end
+end
+
+-- What comes past next. Uniform across the catalogue: the belt is chance, and
+-- price is the only thing gating a species.
+local function rollSpecies(): string
+	local order = Config.SpeciesOrder
+	if #order == 0 then
+		return Config.DefaultSpecies
+	end
+	return order[math.random(#order)]
 end
 
 local function spawnSeed()
-	local part = Seed.createPickup()
+	local species = rollSpecies()
+	local part = Seed.createPickup(species)
 
 	local record: SeedRecord = {
 		part = part,
+		species = species,
 		offset = entryOffset,
-		lane = (math.random() * 2 - 1) * Config.Conveyor.LaneJitter,
 		claimed = false,
 	}
 
@@ -175,8 +213,13 @@ function ConveyorService.start()
 	started = true
 
 	print(
-		("[ConveyorService] Running on %s — %.1f studs/s, one seed every %.1fs.")
-			:format(activeBelt:GetFullName(), Config.Conveyor.Speed, Config.Conveyor.SpawnInterval)
+		("[ConveyorService] Running on %s — %.1f studs/s, one seed every %.1fs, %d species for sale.")
+			:format(
+				activeBelt:GetFullName(),
+				Config.Conveyor.Speed,
+				Config.Conveyor.SpawnInterval,
+				#Config.SpeciesOrder
+			)
 	)
 end
 

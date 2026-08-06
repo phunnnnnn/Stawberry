@@ -1,7 +1,12 @@
 --!strict
 
 --[[
-	One answer to "the player activated a Tool called X".
+	One answer to "the player activated a Tool called X" — or, for a family of
+	Tools that share a job rather than a name, "a Tool tagged with X".
+
+	Seeds are the second case: eighteen species mean eighteen Tool names, but
+	they all plant when clicked and they all carry one attribute, so registering
+	against the attribute is the only way to bind them once.
 
 	PlantingController and FactoryController both need this, and the two awkward
 	parts are worth having exactly one copy of:
@@ -29,21 +34,38 @@ local ToolWatcher = {}
 local player = Players.LocalPlayer
 
 local handlers: { [string]: (Tool) -> () } = {}
+local attributeHandlers: { [string]: (Tool) -> () } = {}
 local watched: { [Tool]: true } = {}
 local containers: { Instance } = {}
 local started = false
 
+-- Which handler a tool should fire: its name first, then any attribute it
+-- carries. Name wins, so a Tool that somehow matched both is handled by the
+-- more specific rule.
+local function handlerFor(tool: Tool): ((Tool) -> ())?
+	local byName = handlers[tool.Name]
+	if byName then
+		return byName
+	end
+
+	for attribute, handler in pairs(attributeHandlers) do
+		if tool:GetAttribute(attribute) ~= nil then
+			return handler
+		end
+	end
+	return nil
+end
+
 local function watchTool(tool: Tool)
-	local handler = handlers[tool.Name]
-	if not handler or watched[tool] then
+	if watched[tool] or not handlerFor(tool) then
 		return
 	end
 	watched[tool] = true
 
 	tool.Activated:Connect(function()
-		-- Read through `handlers` rather than closing over `handler`, so
-		-- re-registering a name takes effect on tools already being watched.
-		local current = handlers[tool.Name]
+		-- Resolved again rather than captured, so re-registering a name or an
+		-- attribute takes effect on tools already being watched.
+		local current = handlerFor(tool)
 		if current then
 			current(tool)
 		end
@@ -111,6 +133,15 @@ end
 -- Calls `handler` whenever the player activates a Tool with this name.
 function ToolWatcher.onActivated(toolName: string, handler: (Tool) -> ())
 	handlers[toolName] = handler
+	ensureStarted()
+	scanAll()
+end
+
+-- Calls `handler` whenever the player activates a Tool carrying this attribute,
+-- whatever the Tool is called. For families that share a job but not a name:
+-- every seed, of any species, plants.
+function ToolWatcher.onActivatedAttribute(attributeName: string, handler: (Tool) -> ())
+	attributeHandlers[attributeName] = handler
 	ensureStarted()
 	scanAll()
 end

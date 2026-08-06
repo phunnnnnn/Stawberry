@@ -11,6 +11,11 @@
 	The client only reports *where* it clicked. Every other decision — is that
 	point on the farm, is the player close enough, do they actually hold a seed
 	— is made here, so a tampered client cannot plant off-farm or for free.
+
+	*Which* species goes in the ground is the seed's, not the click's: the held
+	Tool names it in its SeedSpecies attribute, bought and paid for at the belt.
+	That attribute is still only a selector, so it is re-checked against
+	Config.Plants before anything is planted.
 ]]
 
 local Players = game:GetService("Players")
@@ -21,6 +26,7 @@ local Config = require(ReplicatedStorage.Shared.Config)
 local FarmSurface = require(ReplicatedStorage.Shared.FarmSurface)
 local PlantModel = require(ReplicatedStorage.Shared.PlantModel)
 local Remotes = require(ReplicatedStorage.Shared.Remotes)
+local Seed = require(ReplicatedStorage.Shared.Seed)
 
 local InventoryService = require(script.Parent.InventoryService)
 
@@ -50,18 +56,29 @@ local sprouting: { PlantRecord } = {}
 local lastPlantAt: { [Player]: number } = {}
 local plantCounts: { [Player]: number } = {}
 
-local function equippedSeed(player: Player): Tool?
+-- The seed the player is holding, and the species it grows.
+--
+-- Matched on the attribute rather than the Tool's name: seeds are typed, so
+-- there are eighteen names and only one contract. The species still gets
+-- re-checked against Config.Plants by the caller — the attribute is a selector,
+-- not proof.
+local function equippedSeed(player: Player): (Tool?, string?)
 	local character = player.Character
 	if not character then
-		return nil
+		return nil, nil
 	end
 
 	-- A Tool parented to the character is the one being held.
 	local tool = character:FindFirstChildOfClass("Tool")
-	if tool and tool.Name == Config.Seed.ToolName then
-		return tool
+	if not tool then
+		return nil, nil
 	end
-	return nil
+
+	local speciesName = Seed.speciesOf(tool)
+	if not speciesName then
+		return nil, nil
+	end
+	return tool, speciesName
 end
 
 -- Projects a clicked point onto the farm's top face, or nil if it missed. The
@@ -243,9 +260,15 @@ local function onPlantRequest(player: Player, requested: unknown)
 		return
 	end
 
-	local tool = equippedSeed(player)
-	if not tool then
-		refuse(player, "no %q Tool equipped — it must be held, not just carried", Config.Seed.ToolName)
+	local tool, species = equippedSeed(player)
+	if not (tool and species) then
+		refuse(player, "no seed Tool equipped — one must be held, not just carried")
+		return
+	end
+
+	local spec = Config.Plants[species]
+	if not spec then
+		refuse(player, "the held seed names %q, which is not a species", species)
 		return
 	end
 
@@ -272,7 +295,6 @@ local function onPlantRequest(player: Player, requested: unknown)
 		return
 	end
 
-	local species = Config.DefaultSpecies
 	local model = PlantModel.create(species)
 	if not model then
 		warn(("[PlantingService] Unknown species %q"):format(species))
@@ -310,7 +332,7 @@ local function onPlantRequest(player: Player, requested: unknown)
 			tostring(ground),
 			if model.Parent then model.Parent:GetFullName() else "NOTHING — the model is not in the world",
 			plantCounts[player] or 0,
-			Config.Plants[species].Growth.Time
+			spec.Growth.Time
 		))
 	end
 end
@@ -407,8 +429,8 @@ function PlantingService.start()
 		plantCounts[player] = nil
 	end)
 
-	print(("[PlantingService] Ready on Workspace.%s — planting %s.")
-		:format(Config.Farm.PartName, Config.DefaultSpecies))
+	print(("[PlantingService] Ready on Workspace.%s — %d species plantable.")
+		:format(Config.Farm.PartName, #Config.SpeciesOrder))
 end
 
 return PlantingService

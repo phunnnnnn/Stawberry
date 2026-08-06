@@ -4,10 +4,14 @@
 	Owns everything the player carries.
 
 	Seeds live in the Backpack as Tools — that Tool list *is* the seed
-	inventory, so there is no parallel seed counter to drift out of sync.
+	inventory, so there is no parallel seed counter to drift out of sync. They
+	are typed, one per species, and identified by the attribute Seed tags them
+	with rather than by name; they are also *bought*, so `buySeed` is a second
+	place coins leave a player and it goes through `spendCoins` like the first.
 	Produce — harvested fruit and factory products alike — is a server-side
 	per-item tally, mirrored to leaderstats as a single total for display. The
-	server tally remains authoritative. Coins are the sale payout.
+	server tally remains authoritative. Coins are the sale payout, plus the
+	stake every player joins with.
 
 	**Produce does not stack.** The tally materialises as one Tool per item, so
 	three strawberries are three Tools. That is why the tally is kept rather than
@@ -57,6 +61,14 @@ local function statsFolder(player: Player): Instance
 	return folder
 end
 
+-- What a stat is worth the moment it is created. Held here rather than passed
+-- in by `setup`, so whichever path happens to create Coins first — a sale, a
+-- hire, a seed purchase — starts it at the same number.
+local STAT_DEFAULTS: { [string]: number } = {
+	Fruit = 0,
+	Coins = Config.Inventory.StartingCoins,
+}
+
 local function statValue(player: Player, name: string): IntValue
 	local stats = statsFolder(player)
 	local existing = stats:FindFirstChild(name)
@@ -66,7 +78,7 @@ local function statValue(player: Player, name: string): IntValue
 
 	local value = Instance.new("IntValue")
 	value.Name = name
-	value.Value = 0
+	value.Value = STAT_DEFAULTS[name] or 0
 	value.Parent = stats
 	return value
 end
@@ -225,23 +237,16 @@ function InventoryService.setup(player: Player)
 	itemTable(player)
 end
 
+-- Seeds of every species together. Counted by the attribute rather than by
+-- name, because eighteen species mean eighteen Tool names and only one of them
+-- would be found by a name check.
 function InventoryService.seedCount(player: Player): number
 	local count = 0
 
-	local backpack = player:FindFirstChildOfClass("Backpack")
-	if backpack then
-		for _, item in ipairs(backpack:GetChildren()) do
-			if item:IsA("Tool") and item.Name == Config.Seed.ToolName then
-				count += 1
-			end
-		end
-	end
-
 	-- An equipped seed lives on the character, not the Backpack.
-	local character = player.Character
-	if character then
-		for _, item in ipairs(character:GetChildren()) do
-			if item:IsA("Tool") and item.Name == Config.Seed.ToolName then
+	for _, container in ipairs(containers(player)) do
+		for _, item in ipairs(container:GetChildren()) do
+			if item:IsA("Tool") and Seed.speciesOf(item) then
 				count += 1
 			end
 		end
@@ -250,9 +255,10 @@ function InventoryService.seedCount(player: Player): number
 	return count
 end
 
--- Returns false when the Backpack is already at Config.Seed.MaxHeld, so the
--- caller can leave the belt seed in place rather than destroying it.
-function InventoryService.grantSeed(player: Player): boolean
+-- Hands over a seed of `speciesName`, free. Returns false when the Backpack is
+-- already at Config.Seed.MaxHeld, so the caller can leave the belt seed in
+-- place rather than destroying it.
+function InventoryService.grantSeed(player: Player, speciesName: string?): boolean
 	if InventoryService.seedCount(player) >= Config.Seed.MaxHeld then
 		return false
 	end
@@ -262,8 +268,37 @@ function InventoryService.grantSeed(player: Player): boolean
 		return false
 	end
 
-	Seed.createTool().Parent = backpack
+	Seed.createTool(speciesName).Parent = backpack
 	return true
+end
+
+-- Sells the player a seed off the belt: the one place coins turn into one.
+--
+-- Coins move before the Tool exists and only through spendCoins, which is
+-- all-or-nothing, so a player cannot be half-charged. The room check comes
+-- first for the same reason harvesting checks before picking — being charged
+-- for a seed with nowhere to put it would be the one unrecoverable outcome.
+--
+-- The reason is returned rather than logged here so the caller can report it
+-- against the seed that was refused.
+function InventoryService.buySeed(player: Player, speciesName: string): (boolean, string?)
+	if InventoryService.seedCount(player) >= Config.Seed.MaxHeld then
+		return false, ("already carrying %d seeds"):format(Config.Seed.MaxHeld)
+	end
+
+	local price = Seed.price(speciesName)
+	if not InventoryService.spendCoins(player, price) then
+		return false, ("costs %d coins, has %d"):format(price, statValue(player, "Coins").Value)
+	end
+
+	if not InventoryService.grantSeed(player, speciesName) then
+		-- Only reachable if the Backpack vanished between the two checks. Refund
+		-- rather than pocket the coins for nothing.
+		InventoryService.addCoins(player, price)
+		return false, "no Backpack to put it in"
+	end
+
+	return true, nil
 end
 
 -- Awards produce, and returns how many actually fit.

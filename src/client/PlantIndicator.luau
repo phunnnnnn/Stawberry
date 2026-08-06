@@ -20,6 +20,7 @@ local Workspace = game:GetService("Workspace")
 local Config = require(ReplicatedStorage.Shared.Config)
 local FarmSurface = require(ReplicatedStorage.Shared.FarmSurface)
 local PlantModel = require(ReplicatedStorage.Shared.PlantModel)
+local Seed = require(ReplicatedStorage.Shared.Seed)
 
 local MouseTarget = require(script.Parent.MouseTarget)
 
@@ -138,9 +139,10 @@ local function heldSeed(): Tool?
 	end
 
 	-- A Tool parented to the character is the one being held, matching the
-	-- check PlantingService makes.
+	-- check PlantingService makes — including matching on the attribute rather
+	-- than the name, so every species previews and not just one.
 	local tool = character:FindFirstChildOfClass("Tool")
-	if tool and tool.Name == Config.Seed.ToolName then
+	if tool and Seed.speciesOf(tool) then
 		return tool
 	end
 	return nil

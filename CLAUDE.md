@@ -70,10 +70,10 @@ Getting this wrong is the most likely cause of a "not a valid member" error afte
 
 Shared (`ReplicatedStorage.Shared`):
 
-- **`Config`** — data only, no behaviour. All tuning plus the `PlantSpec`/`FruitSpec`/`ProductSpec` types. Prefer adding a config value over hardcoding.
-- **`Produce`** — one index of everything carryable and sellable, built from `Config.Plants` fruit *and* `Config.Products`. Fruit and factory products are deliberately the same shape here; that is what lets one tally and one stack-Tool mechanism hold both. Anything quoting or charging a price reads it from here — a second copy would eventually quote a number the seller does not honour.
+- **`Config`** — tuning data plus the `PlantSpec`/`FruitSpec`/`ProductSpec` types. Prefer adding a config value over hardcoding. It is data, not behaviour: the only functions in it are the table-builders `pale`/`sproutOf`/`species`, which run once at load to expand the compact species catalogue into ordinary `PlantSpec`s. Nothing downstream can tell an expanded entry from a hand-written one.
+- **`Produce`** — one index of everything carryable and sellable, built from `Config.Plants` fruit *and* `Config.Products`. Fruit and factory products are deliberately the same shape here; that is what lets one tally and one stack-Tool mechanism hold both. Anything quoting or charging a price reads it from here — a second copy would eventually quote a number the seller does not honour. That includes the *seed* price, which `Seed.price` derives from the fruit's, so the belt cannot advertise a number the farm will not later repay.
 - **`Remotes`** — lazily creates (server) or waits for (client) `ReplicatedStorage.Remotes`, so neither side depends on load order. Access via `Remotes.event(Remotes.PLANT_SEED)` / `Remotes.func(Remotes.SELL_FRUIT)`.
-- **`Seed`** — `createPickup()` for the belt ball, `createTool()` for the Backpack item.
+- **`Seed`** — `createPickup(species)` for the belt ball, `createTool(species)` for the Backpack item, `price(species)` for what it costs, and `speciesOf(tool)` — **the one test for "is this Tool a seed"**. Seeds are typed, so the Tool's *name* is a label ("Apple Seed") and the `SeedSpecies` attribute is the contract; a name check finds one species out of eighteen and silently misses the rest.
 - **`PlantModel`** — builds plant and fruit geometry from a species entry, in two stages: `create` makes a sprout, `setScale` grows it, `mature` swaps it for the true form. `groundOf` is the inverse of `place`, so the client can recover a plant's footprint from the replicated model — at any stage, since it reads the `Ground` attribute rather than the (scale-dependent) pivot.
 - **`FarmSurface`** — pure placement rules: `project` (click → point on the pad's top face) and `tooClose` (spacing). Shared **so the client's indicator cannot promise a spot the server refuses**. Add new placement rules here, not in either caller.
 - **`FactoryGrid`** — the same idea for the factory zone, but snapping to a lattice: `project` (click → centre of its grid cell) and `occupied`. Cells are measured from the zone's own centre, so moving or rotating the pad carries the grid with it — never hardcode cell coordinates.
@@ -82,8 +82,8 @@ Shared (`ReplicatedStorage.Shared`):
 
 Server, started in this order by `init.server.luau` (inventory first, the rest award into it):
 
-- **`InventoryService`** — owns everything carried. Prices and item geometry come from `Produce`.
-- **`ConveyorService`** — spawns/moves/despawns belt seeds, grants on pickup.
+- **`InventoryService`** — owns everything carried, plus coins. Prices and item geometry come from `Produce`.
+- **`ConveyorService`** — spawns/moves/despawns belt seeds, and **sells** one on pickup. The belt is the shop: each seed is rolled from `Config.SpeciesOrder` and carries its own price, so what is on offer is chance and what you take is a decision. A refused purchase leaves the seed riding.
 - **`PlantingService`** — validates plant requests, grows plants then fruit, handles harvest.
 - **`FactoryService`** — validates factory placement, then runs each machine's insert → wait → collect cycle. **`refreshPrompts` is the only thing that writes either cycle prompt's `Enabled`** — a machine shows `InputPrompt` while empty, neither while working, `OutputPrompt` once a product is ready. Add a state and you change that one function; enable a prompt anywhere else and the two can contradict each other. Both handlers still re-check the machine's state, since a trigger can be in flight when the state changes under it.
 - **`SellService`** — creates the seller prompt, settles sales. `sellCarried` pays for an item a worker walked in, which was never in the tally.
@@ -92,8 +92,8 @@ Server, started in this order by `init.server.luau` (inventory first, the rest a
 Client:
 
 - **`MouseTarget`** — the one raycast under the cursor. Every controller and indicator uses it; two separate raycasts could disagree and the preview would lie.
-- **`ToolWatcher`** — the single answer to "the player activated a Tool called X". Owns the equip-cycle and respawn bookkeeping described under *Client gotchas*; `PlantingController` and `FactoryController` are thin handlers registered against it. **Add new tool-driven actions here rather than re-implementing the container watching**, which is exactly the bug that cost hours below.
-- **`PlantingController`** — reports where the player clicked while holding a seed.
+- **`ToolWatcher`** — the single answer to "the player activated a Tool called X", or — via `onActivatedAttribute` — "a Tool *tagged* with X". Owns the equip-cycle and respawn bookkeeping described under *Client gotchas*; `PlantingController` and `FactoryController` are thin handlers registered against it. **Add new tool-driven actions here rather than re-implementing the container watching**, which is exactly the bug that cost hours below. Register a family that shares a job but not a name — every seed, of any species — by attribute; a name is only right when exactly one Tool has it.
+- **`PlantingController`** — reports where the player clicked while holding a seed. Registered by attribute, so all eighteen species bind once. It sends *only* the position: which species goes in the ground is read server-side off the Tool it can see being held.
 - **`FactoryController`** — the same for a held factory. It sends the raw click; snapping happens server-side, so a client that snapped differently could only disagree.
 - **`FactoryIndicator`** — preview square for the grid cell a factory will land on. Display-only. Snap-to-grid is invisible without it: the machine goes to the middle of the cell, not to the click.
 - **`PlantIndicator`** — `RenderStepped` preview disc, green where the click will land, red plus a reason where it won't. Cosmetic: it re-checks `FarmSurface` rules for *feedback* and changes no outcome. It cannot preview `MaxPlantsPerPlayer`, which the client has no way to read.
@@ -105,7 +105,7 @@ Client:
 
 ### Inventory model
 
-Seeds are **Tools in the Backpack** — that Tool list *is* the seed inventory, so there is no parallel seed counter to drift. `InventoryService.seedCount` therefore counts both the Backpack *and* the character, because an equipped tool moves to the character.
+Seeds are **Tools in the Backpack** — that Tool list *is* the seed inventory, so there is no parallel seed counter to drift. `InventoryService.seedCount` therefore counts both the Backpack *and* the character, because an equipped tool moves to the character, and it counts by the **`SeedSpecies` attribute rather than by Tool name** — eighteen species mean eighteen names, and a name check would find one and silently miss seventeen. Use `Seed.speciesOf` anywhere you need to ask "is this a seed"; three modules do.
 
 Produce — harvested fruit **and factory products alike** — is a server-side per-item tally (`itemsByPlayer`), mirrored to `leaderstats.Fruit` as a display-only total. Keeping the tally per-item is what lets sales price each thing correctly; don't collapse it to a single number.
 
@@ -128,6 +128,14 @@ Note the asymmetry: **factory stock stacks, produce does not.** One `Factory` To
 Because every award and sale now adds or removes a Tool, `ChildAdded`/`ChildRemoved` fire on every quantity change and are a sufficient trigger for client refreshes. (`leaderstats.Fruit` still moves on all of them and is kept as a backstop.)
 
 `leaderstats` holds `Fruit` and `Coins` only. **No DataStore persistence** — everything resets on shutdown.
+
+### The economy
+
+Players join with `Config.Inventory.StartingCoins` (1000), applied by `STAT_DEFAULTS` at the moment the `Coins` value is *created* rather than by `setup` — so whichever path happens to create it first starts it at the same number.
+
+That stake exists because **seeds are bought, not found.** `Seed.price` is the fruit's own sell price times `Config.Seed.CostMultiplier`, so a plant pays for its seed in that many harvests and the two numbers can never drift apart. At 4× the spread runs from a 24-coin apple to a 460-coin watermelon: the opening decision is a row of fast cheap plants against one or two slow rich ones.
+
+**Coins move in exactly two places, and this is the invariant to protect:** `InventoryService.addCoins` and `InventoryService.spendCoins`. Buying a seed is the second caller of `spendCoins` after hiring. `buySeed` layers on top of `grantSeed` rather than replacing it — `grantSeed` is still the free hand-over, which is what keeps the MCP recipe below working — and it checks Backpack room *before* charging, since being charged for a seed with nowhere to put it is the one unrecoverable outcome.
 
 ### Workers
 
@@ -172,6 +180,7 @@ The client sends **only a click position**. Everything else is decided server-si
 
 - position must project onto the farm pad's top face (`farmSurfacePoint`, with an edge margin; rejects the underside and sides)
 - the player must actually hold a seed Tool, be within `MaxPlantDistance`, respect `PlantCooldown`, `MinPlantSpacing` and `MaxPlantsPerPlayer`
+- **which species is planted comes from the held Tool, never from the client.** The `SeedSpecies` attribute is a selector like `FruitName`, re-checked against `Config.Plants` before anything is built — otherwise a tampered client would plant watermelons from apple seeds
 - the seed is consumed **only after every check passes**
 - selling re-checks distance to the seller; the dialogue proves nothing
 - a produce Tool's `FruitName` attribute is **only a selector** — `sellHeldItem` re-reads quantity and price from server state before paying out
@@ -182,23 +191,25 @@ A rejected plant request is otherwise **completely silent**, which makes a faile
 
 ### Growth invariants
 
-**Two timers, in sequence.** A seed lands as the species' `Sprout` form at `Growth.StartScale` and is scaled up by `PlantingService.stepGrowth` over `Growth.Time`; reaching `Growth.MatureScale` rebuilds the geometry as the `Mature` form — the true form — and *only then* starts the fruit timer. First fruit is therefore `Growth.Time + FruitSpec.GrowTime` away (8s + 3s for Strawberry, verified at 7.994s and 11.000s).
+**Two timers, in sequence.** A seed lands as the species' `Sprout` form at `Growth.StartScale` and is scaled up by `PlantingService.stepGrowth` over `Growth.Time`; reaching `Growth.MatureScale` rebuilds the geometry as the `Mature` form — the true form — and *only then* starts the fruit timer. First fruit is therefore `Growth.Time + FruitSpec.GrowTime` away (8s + 3s for Strawberry, verified at 7.994s and 11.000s; the eighteen species run from Apple's 7s to Watermelon's 68s).
 
 - Only the true form fruits. `scheduleFruit` returns early unless `record.mature`, so a sprout can never bear.
 - The two forms differ in geometry, not just scale: the sprout is a pale two-part seedling, the true form adds a `Crown`. A transformation that was only a size step would be invisible against the scaling that preceded it.
+- **Only the true form is authored.** `Config.sproutOf` derives the seedling from it — half the height, 60% the thickness, 35% toward white, no crown — so a species is described once and every sprout on the farm reads as the same stage. All eighteen share one `StartScale`/`MatureScale`, and `HeightOffset` is derived from the fruit's own radius so a watermelon clears its canopy the way a blueberry does. Add a species by adding an entry to `Catalogue`, not by writing a second `FormSpec`.
 - **`stepGrowth` iterates `sprouting`, not `records`** — plants leave that list once grown, so a farm of mature plants costs nothing per frame. It also drops any plant whose `model.Parent` went nil mid-grow.
 - Scale is applied by recomputing every part's `Size` and `CFrame` from the spec (`PlantModel.setScale` → `layout`), never by stepping last frame's values, so repeated calls cannot accumulate drift. Growth is anchored at the base: the plant rises out of the ground rather than expanding about its centre.
 - **A plant's footprint is its `Ground` attribute, not its pivot.** The pivot is the stem's centre and therefore moves as the plant scales; `place` writes the attribute and `groundOf` reads it back, which is what keeps the client's spacing preview honest about a half-grown sprout. `PlantModel.fruitPosition` measures against `Mature.StemHeight` for the same reason.
 - `buildForm` destroys only `Stem`/`Leaves`/`Crown`. A ripe `Fruit` belongs to the plant, not to the form it hangs on.
 - `Regrow = true` reschedules after harvest, so one plant is a repeatable source. Regrowth restarts the *fruit* timer only — the plant stays mature at full scale and never re-sprouts.
-- A species with `Fruit = nil` grows to its true form but bears nothing. Only the fruit-bearing `Strawberry` exists; the field is optional so barren species need no growth-code changes.
+- A species with `Fruit = nil` grows to its true form but bears nothing. All eighteen currently bear; the field is optional so barren species need no growth-code changes. Note that `Seed.price` would make such a species *free*, since it prices seeds off the fruit.
 - `scheduleFruit` guards on `record.growing` / `record.fruit` and re-checks `model.Parent` after the delay, since the plant can be removed while the timer runs.
 - Belt seeds and fruit are **`Anchored`, `CanCollide = false`**, moved by script — deliberately not physics. Players can't knock them around and there's no jitter.
 - Belt seed positions are computed in **belt-local space**, so moving or rotating `Workspace.Conveyor` carries the flow with it. Never hardcode world coordinates.
+- Seeds ride **single file down the belt's centreline** — the lateral term in `cframeFor` is a literal zero, not a jitter value. One lane is what makes the seed under the prompt unambiguous and the one behind it readable while you decide whether to pay.
 
 ### Client gotchas
 
-Both of the following now live in **`ToolWatcher`** and nowhere else. Register a handler with `ToolWatcher.onActivated(name, fn)` rather than watching containers yourself — a second copy is a second chance to get these wrong.
+Both of the following now live in **`ToolWatcher`** and nowhere else. Register a handler with `ToolWatcher.onActivated(name, fn)` — or `onActivatedAttribute(attribute, fn)` for a family of Tools sharing a job rather than a name — instead of watching containers yourself; a second copy is a second chance to get these wrong.
 
 Equipping moves a Tool to the character and unequipping moves it back, so `Backpack.ChildAdded` fires repeatedly for the same tool. `ToolWatcher` keeps a `watched` set — without it, each equip cycle adds another `Activated` connection and one click plants twice.
 
@@ -279,5 +290,8 @@ Studio blocks plugin HTTP in a play-test context, so the plugin gives up and **n
 - Factory stock is fixed at `StartingStock` — there is no way to earn more, so `MaxPlaced` is currently unreachable. It is a guard for when there is.
 - A factory holds one item at a time and only the owner can use it; a non-owner still sees the prompt and gets a logged refusal.
 - **Placing a factory is currently permanent** — `Config.Factory.CanRemove` is off, so the Pick Up prompt never shows. A misplaced machine burns one of a fixed `StartingStock` *and* blocks its cell for the round. `onRemove` still works and still re-checks the flag server-side, so turning pick-up back on is one boolean.
-- Seeds are untyped — every seed plants `Config.DefaultSpecies`.
+- **Only Strawberry has a recipe.** Eighteen species bear fruit and seventeen of them can only be sold raw, so the factory — and with it the whole refine loop and most of what a worker does — sits on one species out of eighteen. Adding a product per fruit needs one `ProductSpec` each and no code, but it is a balance decision (a pie is 2.5× its fruit) rather than a mechanical one.
+- **The belt is the only way to buy a seed, and it deals one species at a time.** With eighteen in the pool and one seed every `SpawnInterval`, a *specific* species comes past about every 27s — six are on a 122-stud belt at once, so there is always something to buy, but not always the thing you wanted. `SpawnInterval` and `Speed` are the knobs; there is no way to ask for a species.
+- Species are rolled uniformly, so a watermelon seed is as likely to appear as an apple one. Price is the only gate on tier — the same shape as worker stats, and with the same missing rarity curve.
+- `Config.Inventory.StartingCoins` is enough for one 460-coin watermelon plus change, so a new player can skip straight to the top tier and wait 68s. That is a deliberate choice between a slow rich plant and a row of fast cheap ones, but it does mean the progression can be short-circuited on the first minute.
 - `aftman.toml` pins rojo `7.7.0-rc.1`, a release candidate, because that version was already installed locally.
