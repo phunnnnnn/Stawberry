@@ -12,6 +12,10 @@
 	the same MouseTarget helper FactoryController fires with, so a green square
 	means that click really will place there.
 
+	The square also names the tier it is about to place, which matters more than
+	it sounds: there is one Tool per tier, and while Config.Factory.CanRemove is
+	off a machine on the wrong rung is permanent.
+
 	Two rules are not previewed, because the client has no way to read either:
 	the server's MaxPlaced cap and the remaining unplaced stock.
 ]]
@@ -107,19 +111,27 @@ local function factoryZone(): BasePart?
 	return nil
 end
 
-local function heldFactory(): Tool?
+-- The equipped factory Tool and the tier it places, or nil for neither.
+--
+-- Matched on the attribute rather than the name, the same check FactoryService
+-- makes: there is one Tool per tier, so a name check would preview tier 1 and
+-- silently draw nothing for the other four.
+local function heldFactory(): (Tool?, number?)
 	local character = player.Character
 	if not character then
-		return nil
+		return nil, nil
 	end
 
-	-- A Tool parented to the character is the one being held, matching the check
-	-- FactoryService makes.
-	local tool = character:FindFirstChild(Config.Factory.ToolName)
-	if tool and tool:IsA("Tool") then
-		return tool :: Tool
+	local tool = character:FindFirstChildOfClass("Tool")
+	if not tool then
+		return nil, nil
 	end
-	return nil
+
+	local tier = tool:GetAttribute(Config.Factory.TierAttribute)
+	if typeof(tier) ~= "number" then
+		return nil, nil
+	end
+	return tool, tier :: number
 end
 
 local function rebuildOccupied()
@@ -182,7 +194,8 @@ local function update()
 	end
 
 	local pad = factoryZone()
-	if not (pad and heldFactory()) then
+	local _, tier = heldFactory()
+	if not (pad and tier) then
 		setShown(parts.container, false)
 		return
 	end
@@ -205,9 +218,13 @@ local function update()
 		* FactoryGrid.orientation(pad)
 	parts.marker.Color = colour
 
+	-- Names the tier when the cell is free, rather than going blank. Five tiers
+	-- means five identical green squares otherwise, and placing a machine is
+	-- permanent while Config.Factory.CanRemove is off — so "which one is this"
+	-- is worth answering before the click, not after.
 	local reason = parts.reason
 	if reason then
-		reason.Text = blocked or ""
+		reason.Text = blocked or ("Tier %d"):format(tier)
 		reason.TextColor3 = colour
 	end
 

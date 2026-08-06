@@ -59,8 +59,13 @@ export type PlantSpec = {
 -- only thing that makes a pie a pie is this entry.
 export type ProductSpec = {
 	Name: string,
-	-- Fruit consumed, one per run. Must match a FruitSpec.Name.
+	-- The single item consumed, one per run. A raw fruit at tier 1, and the
+	-- tier below's product above that — which is what makes the chain a chain.
 	Source: string,
+	-- Which factory makes it. A tier-N machine accepts exactly the items whose
+	-- recipe is tier N, so this number is both "what comes out" and "what eats
+	-- the input".
+	Tier: number,
 	ProcessTime: number,
 	SellPrice: number,
 	Size: Vector3,
@@ -525,17 +530,81 @@ for _, entry in ipairs(Catalogue) do
 	table.insert(SpeciesOrder, entry.Name)
 end
 
-local Products: { [string]: ProductSpec } = {
-	["Strawberry Pie"] = {
-		Name = "Strawberry Pie",
-		Source = "Strawberry",
-		ProcessTime = 3,
-		-- The whole point of the factory: worth more than the fruit it ate.
-		SellPrice = 30,
-		Size = Vector3.new(1.8, 0.7, 1.8),
-		Color = Color3.fromRGB(214, 152, 96),
-	},
+--[[ The refining ladder
+
+	Factories come in tiers. A tier-1 machine eats a raw fruit and makes a Pie; a
+	tier-2 machine eats that Pie and makes a Cake, and so on up. **These entries
+	are the ladder** — five of them means five machine tiers, and a sixth would
+	need nothing else changed anywhere.
+
+	The chain is per species, not shared: an apple line and a watermelon line are
+	different businesses all the way up, which is the whole point of having
+	eighteen species. That is 18 x 5 products, so they are generated rather than
+	written out — the same argument as the species catalogue above.
+
+	Two things are deliberately uniform across every fruit:
+
+	  * **Size means tier.** A Masterpiece is the same size whatever it is made
+	    of, so a glance at a factory's slot says how far up the ladder it is.
+	  * **Colour means fruit.** Every step bakes the fruit's own colour a little
+	    further toward pastry and then toward gilt, but the hue survives to the
+	    top — eighteen identical gold bricks would read as one item.
+]]
+type TierSpec = {
+	Suffix: string,
+	-- Multiplied onto what the *input* sells for. Falling as the ladder rises,
+	-- so depth still pays without the top of an eighteen-species chain running
+	-- away from every other number in the game.
+	PriceMultiplier: number,
+	ProcessTime: number,
+	Size: Vector3,
 }
+
+local Tiers: { TierSpec } = {
+	{ Suffix = "Pie", PriceMultiplier = 2.5, ProcessTime = 3, Size = Vector3.new(1.8, 0.7, 1.8) },
+	{ Suffix = "Cake", PriceMultiplier = 2.2, ProcessTime = 5, Size = Vector3.new(2.1, 1.1, 2.1) },
+	{ Suffix = "Tower", PriceMultiplier = 2, ProcessTime = 8, Size = Vector3.new(2.4, 1.6, 2.4) },
+	{ Suffix = "Banquet", PriceMultiplier = 1.9, ProcessTime = 12, Size = Vector3.new(2.7, 2.1, 2.7) },
+	{ Suffix = "Masterpiece", PriceMultiplier = 1.8, ProcessTime = 18, Size = Vector3.new(3, 2.7, 3) },
+}
+
+-- Pastry, and the gilt a high tier is finished with. The first tier's blend is
+-- what turns a strawberry into something that reads as baked; the per-tier gilt
+-- is small on purpose, so five steps enrich the colour without erasing it.
+local BAKED_COLOR = Color3.fromRGB(214, 152, 96)
+local BAKED_BLEND = 0.45
+local GILT_COLOR = Color3.fromRGB(240, 202, 92)
+local GILT_PER_TIER = 0.12
+
+local Products: { [string]: ProductSpec } = {}
+
+for _, speciesName in ipairs(SpeciesOrder) do
+	local fruit = Plants[speciesName].Fruit
+	if fruit then
+		-- Both carried down the ladder: each step eats what the last one made and
+		-- is priced against what that was worth.
+		local source = fruit.Name
+		local price = fruit.SellPrice
+		local baked = fruit.Color:Lerp(BAKED_COLOR, BAKED_BLEND)
+
+		for tier, step in ipairs(Tiers) do
+			price = math.ceil(price * step.PriceMultiplier)
+
+			local name = ("%s %s"):format(speciesName, step.Suffix)
+			Products[name] = {
+				Name = name,
+				Source = source,
+				Tier = tier,
+				ProcessTime = step.ProcessTime,
+				SellPrice = price,
+				Size = step.Size,
+				Color = baked:Lerp(GILT_COLOR, (tier - 1) * GILT_PER_TIER),
+			}
+
+			source = name
+		end
+	end
+end
 
 local Config = {
 	-- Fallback for a seed that names no species of its own. Seeds are typed —
@@ -695,9 +764,16 @@ local Config = {
 		ZoneName = "Fatory",
 		FolderName = "Factories",
 
-		-- Tool name in the Backpack. One Tool carries the whole unplaced stock
-		-- as a count attribute, the way a fruit stack does.
+		-- Suffix on the Tool's name, so a machine reads as "Tier 3 Factory" in the
+		-- hotbar. Display only — TierAttribute below is what identifies a Tool as
+		-- a factory and decides which tier gets placed. One Tool *per tier*, each
+		-- carrying that tier's whole unplaced stock as a count attribute.
 		ToolName = "Factory",
+
+		-- Attribute naming the tier, on both the Tool and the placed model. The
+		-- same selector-not-proof role SeedSpecies plays for seeds: the server
+		-- re-checks it against the ladder before placing anything.
+		TierAttribute = "FactoryTier",
 
 		-- Placement lattice, in studs. Cells are measured from the zone's own
 		-- centre, so the grid moves and rotates with the pad instead of being
@@ -713,9 +789,13 @@ local Config = {
 		MaxPlaced = 6,
 		PlaceCooldown = 0.2,
 
-		-- Handed out on join, and re-issued after a respawn replaces the
-		-- Backpack.
-		StartingStock = 3,
+		-- Handed out on join, and re-issued after a respawn replaces the Backpack.
+		-- One entry per tier, so the array's length *is* how many tiers exist.
+		--
+		-- Six machines in total against a MaxPlaced of 6: exactly one full ladder
+		-- plus a second tier-1, which is the shape the loop wants. Tier 1 runs in
+		-- 3s and tier 5 in 18s, so the bottom of the chain is what starves first.
+		StartingStock = { 2, 1, 1, 1, 1 },
 
 		-- Taking a machine back. Currently off, so the Pick Up prompt never shows
 		-- and a placed factory stays where it was put — it burns one of a fixed
@@ -732,12 +812,35 @@ local Config = {
 		BaseSize = Vector3.new(7, 1, 7),
 		BaseColor = Color3.fromRGB(72, 76, 84),
 		BodySize = Vector3.new(5, 3.5, 5),
+
+		-- Fallback body colour, for a tier with no entry of its own below.
 		BodyColor = Color3.fromRGB(148, 122, 96),
 
-		-- Studs between the top of the body and the item on display in the
-		-- slot. The slot is the machine's whole interface: what sits there is
-		-- what is inside it.
-		SlotOffset = 0.9,
+		-- One body colour per tier, rising from workshop timber to something that
+		-- looks like it belongs at the top of the ladder. Read at a distance;
+		-- the pips below are what you count up close.
+		TierColors = {
+			Color3.fromRGB(148, 122, 96),
+			Color3.fromRGB(112, 132, 148),
+			Color3.fromRGB(104, 108, 168),
+			Color3.fromRGB(148, 94, 164),
+			Color3.fromRGB(186, 146, 62),
+		},
+
+		-- A machine wears one pip per tier along the front of its roof, because a
+		-- colour tells five machines apart only once you have learnt the code and
+		-- a count never needs learning. Deliberately bright and Neon rather than
+		-- tinted per tier — the point is to be countable against any body colour.
+		PipSize = Vector3.new(0.5, 0.45, 0.5),
+		PipSpacing = 0.85,
+		PipInset = 1.9,
+		PipColor = Color3.fromRGB(252, 232, 130),
+
+		-- Studs between the top of the body and the *underside* of the item on
+		-- display in the slot. Measured to the underside, not the centre, because
+		-- a tier-5 Masterpiece is four times the height of a tier-1 Pie and a
+		-- centre offset would sink it into the roof.
+		SlotOffset = 0.35,
 
 		PromptRange = 12,
 
@@ -915,6 +1018,10 @@ local Config = {
 	Plants = Plants,
 	SpeciesOrder = SpeciesOrder,
 	Products = Products,
+
+	-- The refining ladder itself. Its length is how many factory tiers exist,
+	-- so nothing counts tiers by hand.
+	Tiers = Tiers,
 }
 
 return Config

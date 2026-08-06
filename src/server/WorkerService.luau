@@ -361,7 +361,8 @@ end
 	pair of hands:
 
 	  1. Carrying something a machine will take, and a machine is free -> load it.
-	  2. Carrying something, everything is busy -> wait, but not forever.
+	  2. Carrying something, the machines that take it are busy -> wait, but not
+	     forever.
 	  3. Carrying something nothing will refine -> sell it.
 	  4. Empty, a machine has a product waiting -> collect it. Finishing work the
 	     owner has already paid a fruit for beats starting more.
@@ -373,6 +374,25 @@ end
 	the fruit raw. Refusing to pick it up in the first place is what keeps the loop
 	from ever reaching that state. An owner with no factory at all still gets fruit
 	fetched and sold — raw is the only option there, so it is not a compromise.
+
+	**Tiers change nothing about the order and everything about "a machine".**
+	Since a machine only accepts the rung below it, every question a worker asks
+	about factories is now asked *about the item in its hands* — is there a free
+	machine for this, is one that takes this busy, does the owner own one at all —
+	and FactoryService answers each by matching tiers. Asking the untiered
+	question instead is the bug to watch for: a worker holding a Pie that waits
+	because some tier-1 is busy is waiting on a machine that can never help it,
+	and it will do that for the full RefineTimeout every single trip.
+
+	What falls out of this for free is that a worker walks the whole ladder.
+	Rule 4 hands it a Pie, rule 1 finds the tier-2 that eats Pies, rule 4 hands it
+	the Cake, and so on until rule 3 finds nothing that refines a Masterpiece and
+	sends it to the stall. No step of that is special-cased.
+
+	Rule 4 stays ungated on purpose, and it is the one asymmetry left: a worker
+	will collect a finished product even with nowhere to take it next. Emptying a
+	machine is progress regardless — it unblocks the rung below — and the worst
+	case is bounded by rule 2's timeout and a raw sale.
 ]]
 local function chooseJob(worker: WorkerRecord, owner: Player, claims: Claims, now: number): Job?
 	local at = worker.position
@@ -384,11 +404,10 @@ local function chooseJob(worker: WorkerRecord, owner: Player, claims: Claims, no
 			return insertJob(worker, machine)
 		end
 
-		-- Nothing free right now. Worth waiting only while a machine is actually
-		-- mid-cycle, and only up to RefineTimeout — see that config comment for the
-		-- narrow case this covers.
-		if Produce.recipeFor(carrying)
-			and FactoryService.hasWorkingFactory(owner)
+		-- Nothing free right now. Worth waiting only while a machine *of the tier
+		-- that takes this* is mid-cycle, and only up to RefineTimeout — see that
+		-- config comment for the narrow case this covers.
+		if FactoryService.hasWorkingFactoryFor(owner, carrying)
 			and now - worker.holdSince < Config.Worker.RefineTimeout
 		then
 			return nil
@@ -414,10 +433,14 @@ local function chooseJob(worker: WorkerRecord, owner: Player, claims: Claims, no
 	end
 
 	-- Rule 5's gate. Nothing refines it, or a machine is standing ready for it, or
-	-- the owner has no factory and raw is the only route anyway.
+	-- the owner owns no machine of the tier that takes it and raw is the only
+	-- route anyway. That last clause is per-tier: an owner with four machines and
+	-- no tier-1 among them cannot refine a strawberry any more than an owner with
+	-- none, and a worker that could not tell the difference would refuse to pick
+	-- fruit at all.
 	local placeable = not Produce.recipeFor(fruit.itemName)
 		or FactoryService.idleFactoryFor(owner, fruit.itemName, at, claims.machines) ~= nil
-		or not FactoryService.hasFactory(owner)
+		or not FactoryService.hasFactoryFor(owner, fruit.itemName)
 	if not placeable then
 		return nil
 	end

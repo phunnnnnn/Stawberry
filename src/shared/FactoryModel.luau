@@ -11,6 +11,13 @@
 
 	The Slot is the machine's entire interface: whatever is inside it sits there
 	in plain sight, so there is no GUI to open and no state to read off a label.
+
+	**A machine's tier has to be readable from outside**, because five of them
+	stand side by side on the same pad and putting a Cake into the wrong one is
+	the mistake the whole ladder invites. It is said three ways: the body colour
+	(at a distance), a row of pips you can count (up close), and the prompts'
+	own ObjectText (once you are in range to press anything). The tier is also
+	written to an attribute, which is what the client reads — never the colour.
 ]]
 
 local Config = require(script.Parent.Config)
@@ -28,11 +35,45 @@ local function newPart(name: string, parent: Instance): Part
 	return part
 end
 
-function FactoryModel.create(): Model
+-- Clamped rather than trusted: a tier past the end of the palette gets the
+-- fallback colour instead of erroring in the middle of building a machine.
+local function bodyColorFor(tier: number): Color3
+	local palette = Config.Factory.TierColors
+	return palette[tier] or Config.Factory.BodyColor
+end
+
+-- Studs from the model's own origin up to the top of the body — where a pip
+-- sits, and where an item in the slot rests.
+local function roofHeight(): number
+	return Config.Factory.BaseSize.Y + Config.Factory.BodySize.Y
+end
+
+-- One pip per tier, in a row along the front edge of the roof and centred on
+-- it, so three pips read as three whatever the machine is made of.
+local function addPips(model: Model, tier: number)
+	local cfg = Config.Factory
+	local top = roofHeight()
+
+	for index = 1, tier do
+		local pip = newPart(("Pip%d"):format(index), model)
+		pip.Size = cfg.PipSize
+		pip.Color = cfg.PipColor
+		pip.Material = Enum.Material.Neon
+		pip.CanCollide = false
+		pip.CanTouch = false
+		pip.CanQuery = false
+
+		local offset = (index - (tier + 1) / 2) * cfg.PipSpacing
+		pip.CFrame = CFrame.new(offset, top + cfg.PipSize.Y / 2, -cfg.PipInset)
+	end
+end
+
+function FactoryModel.create(tier: number): Model
 	local cfg = Config.Factory
 
 	local model = Instance.new("Model")
-	model.Name = "Factory"
+	model.Name = ("Tier %d Factory"):format(tier)
+	model:SetAttribute(cfg.TierAttribute, tier)
 
 	local base = newPart("Base", model)
 	base.Size = cfg.BaseSize
@@ -42,12 +83,15 @@ function FactoryModel.create(): Model
 
 	local body = newPart("Body", model)
 	body.Size = cfg.BodySize
-	body.Color = cfg.BodyColor
+	body.Color = bodyColorFor(tier)
 	body.Material = Enum.Material.WoodPlanks
 	body.CFrame = CFrame.new(0, cfg.BaseSize.Y + cfg.BodySize.Y / 2, 0)
 
+	addPips(model, tier)
+
 	-- Holds whatever the machine currently contains. Invisible and
-	-- non-colliding while empty; `showItem` gives it a body.
+	-- non-colliding while empty; `showItem` gives it a body and stands it on
+	-- the roof.
 	local slot = newPart("Slot", model)
 	slot.Size = Vector3.one
 	slot.Material = Enum.Material.SmoothPlastic
@@ -55,7 +99,9 @@ function FactoryModel.create(): Model
 	slot.CanCollide = false
 	slot.CanTouch = false
 	slot.CanQuery = false
-	slot.CFrame = CFrame.new(0, cfg.BaseSize.Y + cfg.BodySize.Y + cfg.SlotOffset, 0)
+	slot.CFrame = CFrame.new(0, roofHeight() + cfg.SlotOffset + 0.5, 0)
+
+	local objectText = ("Tier %d Factory"):format(tier)
 
 	-- One prompt per end of the machine's cycle rather than one that rewrites
 	-- itself. FactoryService enables exactly one at a time — insert while empty,
@@ -64,8 +110,8 @@ function FactoryModel.create(): Model
 	-- they are never enabled together.
 	local input = Instance.new("ProximityPrompt")
 	input.Name = "InputPrompt"
-	input.ActionText = "Insert Fruit"
-	input.ObjectText = "Factory"
+	input.ActionText = "Insert"
+	input.ObjectText = objectText
 	input.HoldDuration = 0
 	input.MaxActivationDistance = cfg.PromptRange
 	input.RequiresLineOfSight = false
@@ -76,7 +122,7 @@ function FactoryModel.create(): Model
 	local output = Instance.new("ProximityPrompt")
 	output.Name = "OutputPrompt"
 	output.ActionText = "Collect"
-	output.ObjectText = "Factory"
+	output.ObjectText = objectText
 	output.HoldDuration = 0
 	output.MaxActivationDistance = cfg.PromptRange
 	output.RequiresLineOfSight = false
@@ -90,7 +136,7 @@ function FactoryModel.create(): Model
 	local remove = Instance.new("ProximityPrompt")
 	remove.Name = "RemovePrompt"
 	remove.ActionText = "Pick Up"
-	remove.ObjectText = "Factory"
+	remove.ObjectText = objectText
 	remove.KeyboardKeyCode = cfg.RemoveKey
 	remove.HoldDuration = cfg.RemoveHoldDuration
 	remove.MaxActivationDistance = cfg.PromptRange
@@ -100,6 +146,14 @@ function FactoryModel.create(): Model
 
 	model.PrimaryPart = base
 	return model
+end
+
+-- Which tier a built machine is, straight off the attribute. The client reads
+-- this rather than inferring anything from the body colour or the pip count,
+-- both of which are presentation.
+function FactoryModel.tierOf(model: Model): number
+	local tier = model:GetAttribute(Config.Factory.TierAttribute)
+	return if typeof(tier) == "number" then tier :: number else 1
 end
 
 -- Stands a freshly built machine on `ground`, which carries the zone's rotation
@@ -115,8 +169,14 @@ function FactoryModel.groundOf(model: Model): Vector3
 end
 
 -- Puts an item on display in the slot, or clears it when `itemName` is nil. The
--- look comes from Produce, so what sits in the machine matches the stack Tool
--- the same item produces in the Backpack.
+-- look comes from Produce, so what sits in the machine matches the Tool the
+-- same item produces in the Backpack.
+--
+-- The slot is re-*positioned* as well as resized, because an item's height now
+-- says which tier it is: a Masterpiece is four times a Pie, and a fixed centre
+-- offset would bury the tall ones in the roof and float the short ones. Resting
+-- everything on the roof by its underside makes the height difference the thing
+-- you actually see.
 function FactoryModel.showItem(model: Model, itemName: string?)
 	local slot = model:FindFirstChild("Slot")
 	if not (slot and slot:IsA("BasePart")) then
@@ -124,12 +184,7 @@ function FactoryModel.showItem(model: Model, itemName: string?)
 	end
 	local part = slot :: BasePart
 
-	if not itemName then
-		part.Transparency = 1
-		return
-	end
-
-	local spec = Produce.spec(itemName)
+	local spec = if itemName then Produce.spec(itemName) else nil
 	if not spec then
 		part.Transparency = 1
 		return
@@ -139,6 +194,16 @@ function FactoryModel.showItem(model: Model, itemName: string?)
 	part.Size = spec.Size
 	part.Color = spec.Color
 	part.Transparency = 0
+
+	-- Measured from where the machine stands rather than from the slot's current
+	-- CFrame, so repeated calls cannot walk the item up off the roof — the same
+	-- anti-drift rule PlantModel.layout follows.
+	local ground = FactoryModel.groundOf(model)
+	part.CFrame = CFrame.new(
+		ground.X,
+		ground.Y + roofHeight() + Config.Factory.SlotOffset + spec.Size.Y / 2,
+		ground.Z
+	)
 end
 
 return FactoryModel
