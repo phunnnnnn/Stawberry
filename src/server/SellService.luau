@@ -11,6 +11,7 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Config = require(ReplicatedStorage.Shared.Config)
+local Produce = require(ReplicatedStorage.Shared.Produce)
 local Remotes = require(ReplicatedStorage.Shared.Remotes)
 
 local InventoryService = require(script.Parent.InventoryService)
@@ -63,6 +64,36 @@ local function onSellRequest(player: Player, mode: unknown): InventoryService.Sa
 	end
 
 	return result
+end
+
+-- The stall itself, so a worker can work out where to walk and how wide a berth
+-- to give it. Nil until start() has found it.
+function SellService.stall(): BasePart?
+	return seller
+end
+
+-- Pays `player` for one item a worker carried to the stall.
+--
+-- Nothing is taken from the inventory tally because the item was never in it —
+-- the worker held it in its hands the whole way. There is no distance check
+-- either: the worker's arrival is the server's own fact, not a client's claim.
+-- The price still comes from Produce, so a worker cannot be paid a number the
+-- player's own sale would not honour.
+function SellService.sellCarried(player: Player, itemName: string): number
+	local earned = Produce.price(itemName)
+	if earned <= 0 then
+		if Config.Seller.LogSales then
+			warn(("[SellService] refused a worker's %s — nothing prices it."):format(itemName))
+		end
+		return 0
+	end
+
+	InventoryService.addCoins(player, earned)
+
+	if Config.Seller.LogSales then
+		print(("[SellService] %s's worker sold a %s for %d coins."):format(player.Name, itemName, earned))
+	end
+	return earned
 end
 
 function SellService.start()

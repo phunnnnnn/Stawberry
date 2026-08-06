@@ -57,17 +57,36 @@ function FactoryModel.create(): Model
 	slot.CanQuery = false
 	slot.CFrame = CFrame.new(0, cfg.BaseSize.Y + cfg.BodySize.Y + cfg.SlotOffset, 0)
 
-	local prompt = Instance.new("ProximityPrompt")
-	prompt.Name = "FactoryPrompt"
-	prompt.ActionText = "Insert Fruit"
-	prompt.ObjectText = "Factory"
-	prompt.HoldDuration = 0
-	prompt.MaxActivationDistance = cfg.PromptRange
-	prompt.RequiresLineOfSight = false
-	prompt.Parent = body
+	-- One prompt per end of the machine's cycle rather than one that rewrites
+	-- itself. FactoryService enables exactly one at a time — insert while empty,
+	-- neither while it works, collect once it is done — so a glance at a machine
+	-- says what it wants without reading the text. They can share a key because
+	-- they are never enabled together.
+	local input = Instance.new("ProximityPrompt")
+	input.Name = "InputPrompt"
+	input.ActionText = "Insert Fruit"
+	input.ObjectText = "Factory"
+	input.HoldDuration = 0
+	input.MaxActivationDistance = cfg.PromptRange
+	input.RequiresLineOfSight = false
+	input.Parent = body
+
+	-- Hidden until there is something to collect, which is the state a machine
+	-- is built in. Enabling it is FactoryService's job.
+	local output = Instance.new("ProximityPrompt")
+	output.Name = "OutputPrompt"
+	output.ActionText = "Collect"
+	output.ObjectText = "Factory"
+	output.HoldDuration = 0
+	output.MaxActivationDistance = cfg.PromptRange
+	output.RequiresLineOfSight = false
+	output.Enabled = false
+	output.Parent = body
 
 	-- Separate key and a hold, so taking the machine back can never happen by
-	-- accident while tapping E to run it.
+	-- accident while tapping E to run it. Built either way and hidden when
+	-- Config.Factory.CanRemove is off, so turning pick-up back on is one flag
+	-- rather than a change here and a matching one in FactoryService.
 	local remove = Instance.new("ProximityPrompt")
 	remove.Name = "RemovePrompt"
 	remove.ActionText = "Pick Up"
@@ -76,6 +95,7 @@ function FactoryModel.create(): Model
 	remove.HoldDuration = cfg.RemoveHoldDuration
 	remove.MaxActivationDistance = cfg.PromptRange
 	remove.RequiresLineOfSight = false
+	remove.Enabled = cfg.CanRemove
 	remove.Parent = body
 
 	model.PrimaryPart = base

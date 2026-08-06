@@ -8,16 +8,20 @@
 	free, is the player close enough, do they have a factory left to place — is
 	made here.
 
-	A machine has one ProximityPrompt and three states, and the prompt's own text
-	is the whole interface:
+	A machine has three states, and which of its two cycle prompts is showing is
+	the whole interface:
 
-	  empty      "Insert Strawberry"   -> consumes one fruit, starts the timer
-	  processing  prompt disabled      -> the fruit sits in the slot for
-	                                      ProductSpec.ProcessTime seconds
-	  ready      "Collect ..."         -> the product goes into the inventory
+	  empty       InputPrompt   "Insert Strawberry" -> eats a fruit, starts the timer
+	  processing  neither       the fruit sits in the slot for ProcessTime seconds
+	  ready       OutputPrompt  "Collect ..."       -> the product goes to the inventory
 
-	A second prompt on its own key takes an empty machine back into stock, so a
-	misplaced factory is not permanent.
+	`refreshPrompts` is the only thing that touches either prompt's `Enabled`, so
+	the three states cannot drift apart. A machine is built with the output prompt
+	already hidden — empty is the state it starts in.
+
+	A third prompt on its own key takes an empty machine back into stock. It is
+	currently switched off by `Config.Factory.CanRemove`, so a placed factory
+	stays put; the handler is left wired so the flag is the only thing to change.
 
 	The unplaced stock is a count on a single Tool rather than one Tool per
 	factory, which is the same shape as a produce stack: it survives a respawn
@@ -39,7 +43,8 @@ type FactoryRecord = {
 	model: Model,
 	owner: Player,
 	cell: Vector3,
-	prompt: ProximityPrompt,
+	inputPrompt: ProximityPrompt,
+	outputPrompt: ProximityPrompt,
 	-- Exactly one of these is set at a time, or neither when the machine is
 	-- empty: `input` while the timer runs, `output` once it has finished.
 	input: string?,
@@ -176,28 +181,85 @@ local function chooseInput(player: Player): string?
 	return nil
 end
 
--- Names the fruit the player would insert next, so the prompt advertises what
--- pressing E will actually do rather than a generic "Insert Fruit". Only the
--- owner can trigger the prompt, so owner-specific text is safe here.
-local function refreshIdlePrompt(record: FactoryRecord)
-	-- Mid-cycle the prompt is showing "Collect ..." or is disabled; rewriting it
-	-- from the idle text would erase that.
-	if record.input or record.output then
+-- Shows the one prompt that matches the machine's state and hides the other.
+-- The single place either `Enabled` is written, so no path can leave a machine
+-- offering both or neither by accident.
+--
+-- The idle text names the fruit the player would insert next, so the prompt
+-- advertises what pressing E will actually do rather than a generic "Insert
+-- Fruit". Only the owner can trigger it, so owner-specific text is safe.
+local function refreshPrompts(record: FactoryRecord)
+	local product = record.output
+	if product then
+		-- Done: the only thing left to do is take the product out.
+		record.inputPrompt.Enabled = false
+		record.outputPrompt.ActionText = ("Collect %s"):format(product)
+		record.outputPrompt.Enabled = true
 		return
 	end
+
+	if record.input then
+		-- Working. Nothing can be put in or taken out, so offer neither: an
+		-- unpressable prompt reads as a bug, and its absence reads as "wait".
+		record.inputPrompt.Enabled = false
+		record.outputPrompt.Enabled = false
+		return
+	end
+
 	local candidate = chooseInput(record.owner)
-	record.prompt.ActionText = if candidate then ("Insert %s"):format(candidate) else "Insert Fruit"
+	record.inputPrompt.ActionText = if candidate then ("Insert %s"):format(candidate) else "Insert Fruit"
+	record.inputPrompt.Enabled = true
+	record.outputPrompt.Enabled = false
 end
 
--- Every idle machine a player owns. Their stock changes whenever they harvest,
--- insert, collect or sell, and the prompt has to keep up or it advertises a
+-- Every machine a player owns. Their stock changes whenever they harvest,
+-- insert, collect or sell, and the idle text has to keep up or it advertises a
 -- fruit they no longer have.
-local function refreshIdlePromptsFor(player: Player)
+local function refreshPromptsFor(player: Player)
 	for _, record in ipairs(records) do
 		if record.owner == player then
-			refreshIdlePrompt(record)
+			refreshPrompts(record)
 		end
 	end
+end
+
+-- The one state transition that starts a machine. A player's prompt and a worker
+-- both come through here, so a cycle cannot be started two different ways and the
+-- finish timer can only ever be armed once per load.
+local function beginCycle(record: FactoryRecord, source: string, recipe: Config.ProductSpec)
+	record.input = source
+	FactoryModel.showItem(record.model, source)
+	refreshPrompts(record)
+
+	task.delay(recipe.ProcessTime, function()
+		-- The machine can be removed, or its contents replaced, while the timer
+		-- runs — the same guard scheduleFruit needs.
+		if record.model.Parent == nil or record.input ~= source then
+			return
+		end
+
+		record.input = nil
+		record.output = recipe.Name
+		FactoryModel.showItem(record.model, recipe.Name)
+		refreshPrompts(record)
+
+		log("a factory at %s finished a %s", tostring(record.cell), recipe.Name)
+	end)
+end
+
+-- The one state transition that empties a finished machine, handing back what came
+-- out. The caller decides where it goes: a player's prompt has already found
+-- Backpack room for it, a worker takes it in its hands.
+local function endCycle(record: FactoryRecord): string?
+	local product = record.output
+	if not product then
+		return nil
+	end
+
+	record.output = nil
+	FactoryModel.showItem(record.model, nil)
+	refreshPrompts(record)
+	return product
 end
 
 local function insert(record: FactoryRecord, player: Player)
@@ -220,28 +282,10 @@ local function insert(record: FactoryRecord, player: Player)
 		return
 	end
 
-	record.input = source
-	FactoryModel.showItem(record.model, source)
-	record.prompt.Enabled = false
+	beginCycle(record, source, recipe)
 
 	log("%s inserted %s into a factory at %s (%.1fs)",
 		player.Name, source, tostring(record.cell), recipe.ProcessTime)
-
-	task.delay(recipe.ProcessTime, function()
-		-- The machine can be removed, or its contents replaced, while the timer
-		-- runs — the same guard scheduleFruit needs.
-		if record.model.Parent == nil or record.input ~= source then
-			return
-		end
-
-		record.input = nil
-		record.output = recipe.Name
-		FactoryModel.showItem(record.model, recipe.Name)
-		record.prompt.ActionText = ("Collect %s"):format(recipe.Name)
-		record.prompt.Enabled = true
-
-		log("a factory at %s finished a %s", tostring(record.cell), recipe.Name)
-	end)
 end
 
 local function collect(record: FactoryRecord, player: Player, product: string)
@@ -254,31 +298,55 @@ local function collect(record: FactoryRecord, player: Player, product: string)
 		return
 	end
 
-	record.output = nil
-	FactoryModel.showItem(record.model, nil)
-	refreshIdlePrompt(record)
+	endCycle(record)
 
 	log("%s collected a %s worth %d coins", player.Name, product, Produce.price(product))
 end
 
-local function onPrompt(record: FactoryRecord, player: Player)
-	-- The player placed this machine, so it is theirs. Plants have no such
-	-- check, but there is no reason to inherit that gap here.
-	if player ~= record.owner then
-		refuse(player, "does not own the factory at %s", tostring(record.cell))
+-- The player placed this machine, so it is theirs. Plants have no such check,
+-- but there is no reason to inherit that gap here.
+local function owns(record: FactoryRecord, player: Player): boolean
+	if player == record.owner then
+		return true
+	end
+	refuse(player, "does not own the factory at %s", tostring(record.cell))
+	return false
+end
+
+-- Both handlers re-check the machine's state rather than trusting that the
+-- right prompt was showing: a trigger can already be in flight when the state
+-- changes under it.
+local function onInputPrompt(record: FactoryRecord, player: Player)
+	if not owns(record, player) then
+		return
+	end
+
+	if record.output then
+		refuse(player, "the factory at %s has a %s waiting to be collected",
+			tostring(record.cell), record.output)
+		return
+	end
+
+	if record.input then
+		refuse(player, "the factory at %s is still working", tostring(record.cell))
+		return
+	end
+
+	insert(record, player)
+end
+
+local function onOutputPrompt(record: FactoryRecord, player: Player)
+	if not owns(record, player) then
 		return
 	end
 
 	local product = record.output
-	if product then
-		collect(record, player, product)
-	elseif record.input then
-		-- The prompt is disabled while processing, so this only happens if a
-		-- trigger was already in flight when the timer started.
-		refuse(player, "the factory at %s is still working", tostring(record.cell))
-	else
-		insert(record, player)
+	if not product then
+		refuse(player, "the factory at %s has nothing to collect", tostring(record.cell))
+		return
 	end
+
+	collect(record, player, product)
 end
 
 -- Takes a machine back into the player's stock, freeing its cell.
@@ -287,8 +355,15 @@ end
 -- what happens to a fruit that was already eaten, and the player only has to
 -- collect first.
 local function onRemove(record: FactoryRecord, player: Player)
-	if player ~= record.owner then
-		refuse(player, "does not own the factory at %s", tostring(record.cell))
+	-- Re-checked here and not just left to the hidden prompt, for the same
+	-- reason every other gate is server-side: a disabled prompt is a client-side
+	-- fact, and this hands a machine back into stock.
+	if not Config.Factory.CanRemove then
+		refuse(player, "factory pick-up is switched off")
+		return
+	end
+
+	if not owns(record, player) then
 		return
 	end
 
@@ -396,15 +471,17 @@ local function onPlaceRequest(player: Player, requested: unknown)
 	model:SetAttribute("OwnerUserId", player.UserId)
 	model.Parent = factoryFolder
 
-	-- By name, not by class: the machine carries two prompts and picking
-	-- whichever one comes back first would wire the run cycle to Pick Up.
-	local runPrompt = model:FindFirstChild("FactoryPrompt", true)
+	-- By name, not by class: the machine carries three prompts and picking
+	-- whichever one comes back first would wire inserting to Pick Up.
+	local inputPrompt = model:FindFirstChild("InputPrompt", true)
+	local outputPrompt = model:FindFirstChild("OutputPrompt", true)
 	local removePrompt = model:FindFirstChild("RemovePrompt", true)
-	if not (runPrompt and runPrompt:IsA("ProximityPrompt")
+	if not (inputPrompt and inputPrompt:IsA("ProximityPrompt")
+		and outputPrompt and outputPrompt:IsA("ProximityPrompt")
 		and removePrompt and removePrompt:IsA("ProximityPrompt")) then
 		-- Without its prompts the machine is scenery, so fail loudly rather than
 		-- leaving an inert box standing on a cell nobody can reclaim.
-		warn("[FactoryService] built a factory without both prompts — discarding it.")
+		warn("[FactoryService] built a factory without all three prompts — discarding it.")
 		model:Destroy()
 		stock[player] = (stock[player] or 0) + 1
 		syncFactoryTool(player)
@@ -415,19 +492,23 @@ local function onPlaceRequest(player: Player, requested: unknown)
 		model = model,
 		owner = player,
 		cell = cell,
-		prompt = runPrompt :: ProximityPrompt,
+		inputPrompt = inputPrompt :: ProximityPrompt,
+		outputPrompt = outputPrompt :: ProximityPrompt,
 		input = nil,
 		output = nil,
 	}
 	table.insert(records, record)
 
-	record.prompt.Triggered:Connect(function(triggeredBy: Player)
-		onPrompt(record, triggeredBy)
+	record.inputPrompt.Triggered:Connect(function(triggeredBy: Player)
+		onInputPrompt(record, triggeredBy)
+	end)
+	record.outputPrompt.Triggered:Connect(function(triggeredBy: Player)
+		onOutputPrompt(record, triggeredBy)
 	end)
 	;(removePrompt :: ProximityPrompt).Triggered:Connect(function(triggeredBy: Player)
 		onRemove(record, triggeredBy)
 	end)
-	refreshIdlePrompt(record)
+	refreshPrompts(record)
 
 	log("%s placed a factory at %s under %s (%d placed, %d left)",
 		player.Name,
@@ -435,6 +516,138 @@ local function onPlaceRequest(player: Player, requested: unknown)
 		if model.Parent then model.Parent:GetFullName() else "NOTHING — the model is not in the world",
 		placedCount(player),
 		stock[player] or 0)
+end
+
+--[[ Worker-facing view of the factory zone
+
+	A worker is a second actor on the same machines, so it gets *queries* — is
+	there one I can load, is there one with something waiting — and *commits* that
+	go through the same two transitions the prompts use. It never reaches into
+	`records`, and it never touches a prompt's `Enabled`: beginCycle and endCycle
+	both end in refreshPrompts, so a machine a worker loaded advertises itself
+	exactly like one a player loaded.
+]]
+
+export type MachineHandle = {
+	model: Model,
+	position: Vector3,
+}
+
+local function handleFor(record: FactoryRecord): MachineHandle
+	return { model = record.model, position = record.cell }
+end
+
+local function recordFor(handle: MachineHandle): FactoryRecord?
+	for _, record in ipairs(records) do
+		if record.model == handle.model then
+			return record
+		end
+	end
+	return nil
+end
+
+-- Nearest machine of `owner`'s that `accept` likes, skipping any model in `skip`
+-- so two workers do not both walk to the same one.
+local function nearestMatching(
+	owner: Player,
+	from: Vector3,
+	skip: { [Instance]: boolean }?,
+	accept: (FactoryRecord) -> boolean
+): MachineHandle?
+	local best: FactoryRecord? = nil
+	local bestDistance = math.huge
+
+	for _, record in ipairs(records) do
+		if record.owner == owner and record.model.Parent ~= nil
+			and not (skip and skip[record.model]) and accept(record)
+		then
+			local distance = (record.cell - from).Magnitude
+			if distance < bestDistance then
+				bestDistance = distance
+				best = record
+			end
+		end
+	end
+
+	return if best then handleFor(best) else nil
+end
+
+-- An empty machine of `owner`'s that would take `itemName`.
+function FactoryService.idleFactoryFor(
+	owner: Player,
+	itemName: string,
+	from: Vector3,
+	skip: { [Instance]: boolean }?
+): MachineHandle?
+	-- Nothing refines a pie, so a worker carrying one is told there is no machine
+	-- for it rather than being sent to load it into something.
+	if not Produce.recipeFor(itemName) then
+		return nil
+	end
+	return nearestMatching(owner, from, skip, function(record)
+		return record.input == nil and record.output == nil
+	end)
+end
+
+-- A machine of `owner`'s with a finished product waiting to be taken out.
+function FactoryService.readyFactoryFor(
+	owner: Player,
+	from: Vector3,
+	skip: { [Instance]: boolean }?
+): MachineHandle?
+	return nearestMatching(owner, from, skip, function(record)
+		return record.output ~= nil
+	end)
+end
+
+-- True when one of `owner`'s machines is mid-cycle. Lets a worker holding a fruit
+-- wait for a machine to free up instead of giving up and selling it raw for a
+-- third of what refining it would earn.
+function FactoryService.hasWorkingFactory(owner: Player): boolean
+	for _, record in ipairs(records) do
+		if record.owner == owner and record.input ~= nil then
+			return true
+		end
+	end
+	return false
+end
+
+-- Whether `owner` has any machine standing at all. A worker with nowhere to
+-- refine a fruit takes it straight to the stall instead of holding out for a
+-- factory that does not exist.
+function FactoryService.hasFactory(owner: Player): boolean
+	return placedCount(owner) > 0
+end
+
+-- Loads an item the caller is already holding. Nothing is taken from an
+-- inventory: unlike the prompt path, the fruit is in a worker's hands and was
+-- never in the tally.
+--
+-- Re-checked rather than trusted, because a player can load the same machine
+-- during the seconds a worker spends walking to it.
+function FactoryService.insertItem(handle: MachineHandle, itemName: string): boolean
+	local record = recordFor(handle)
+	if not record or record.input or record.output then
+		return false
+	end
+
+	local recipe = Produce.recipeFor(itemName)
+	if not recipe then
+		return false
+	end
+
+	beginCycle(record, itemName, recipe)
+	return true
+end
+
+-- Takes the finished product out for a caller that will carry it away. Nil when
+-- the owner already collected it by hand while the worker was walking over.
+function FactoryService.collectProduct(handle: MachineHandle): string?
+	local record = recordFor(handle)
+	if not record then
+		return nil
+	end
+	return endCycle(record)
 end
 
 local function removePlayer(player: Player)
@@ -496,7 +709,7 @@ function FactoryService.start()
 			local produce = stats and stats:WaitForChild("Fruit", 30)
 			if produce and produce:IsA("IntValue") then
 				produce.Changed:Connect(function()
-					refreshIdlePromptsFor(player)
+					refreshPromptsFor(player)
 				end)
 			end
 		end)

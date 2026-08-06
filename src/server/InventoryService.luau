@@ -325,6 +325,15 @@ function InventoryService.heldItemName(player: Player): string?
 	return itemName :: string
 end
 
+-- The one place Coins moves. Selling out of the tally comes through here, and so
+-- does a worker being paid for something it carried to the stall in its hands and
+-- that therefore was never in the tally at all.
+function InventoryService.addCoins(player: Player, amount: number): number
+	local coins = statValue(player, "Coins")
+	coins.Value += amount
+	return coins.Value
+end
+
 export type SaleResult = {
 	sold: number,
 	earned: number,
@@ -352,7 +361,7 @@ function InventoryService.sellAllItems(player: Player): SaleResult
 	itemsByPlayer[player] = {}
 	syncItemStat(player)
 	removeAllStackTools(player)
-	statValue(player, "Coins").Value += earned
+	InventoryService.addCoins(player, earned)
 
 	return { sold = sold, earned = earned }
 end
@@ -372,7 +381,7 @@ function InventoryService.sellHeldItem(player: Player): SaleResult
 		return { sold = 0, earned = 0, reason = "That is not in your inventory." }
 	end
 
-	statValue(player, "Coins").Value += spec.SellPrice
+	InventoryService.addCoins(player, spec.SellPrice)
 
 	return { sold = 1, earned = spec.SellPrice, itemName = itemName }
 end

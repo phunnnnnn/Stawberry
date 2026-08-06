@@ -18,13 +18,39 @@ export type FruitSpec = {
 	HeightOffset: number,
 }
 
-export type PlantSpec = {
-	DisplayName: string,
+-- The geometry of a plant at one stage of its life. A seed sprouts as the
+-- species' `Sprout` form and is scaled up until it reaches the growth limit, at
+-- which point the geometry is rebuilt as `Mature` — the plant's true form, and
+-- the only one that bears fruit.
+export type FormSpec = {
 	StemHeight: number,
 	StemThickness: number,
 	StemColor: Color3,
 	LeafSize: Vector3,
 	LeafColor: Color3,
+	-- Blossom on top of the true form. Left nil on the sprout, which is what
+	-- makes maturing read as a transformation rather than one more size step.
+	CrownSize: Vector3?,
+	CrownColor: Color3?,
+}
+
+export type GrowthSpec = {
+	-- Seconds from planting to the scale limit. Fruit only starts growing after
+	-- this, so a plant's first fruit is Time + FruitSpec.GrowTime away.
+	Time: number,
+
+	-- Fraction of the sprout's full size it appears at when planted.
+	StartScale: number,
+
+	-- The limit. Reaching it swaps the sprout for the true form.
+	MatureScale: number,
+}
+
+export type PlantSpec = {
+	DisplayName: string,
+	Growth: GrowthSpec,
+	Sprout: FormSpec,
+	Mature: FormSpec,
 	Fruit: FruitSpec?,
 }
 
@@ -44,11 +70,28 @@ export type ProductSpec = {
 local Plants: { [string]: PlantSpec } = {
 	Strawberry = {
 		DisplayName = "Strawberry",
-		StemHeight = 3,
-		StemThickness = 0.35,
-		StemColor = Color3.fromRGB(58, 110, 48),
-		LeafSize = Vector3.new(1.9, 0.6, 1.9),
-		LeafColor = Color3.fromRGB(86, 156, 62),
+		Growth = {
+			Time = 8,
+			StartScale = 0.2,
+			MatureScale = 1,
+		},
+		-- Pale, spindly, and small: a seedling, not a short strawberry plant.
+		Sprout = {
+			StemHeight = 1.6,
+			StemThickness = 0.22,
+			StemColor = Color3.fromRGB(122, 176, 96),
+			LeafSize = Vector3.new(1, 0.35, 1),
+			LeafColor = Color3.fromRGB(146, 200, 108),
+		},
+		Mature = {
+			StemHeight = 3,
+			StemThickness = 0.35,
+			StemColor = Color3.fromRGB(58, 110, 48),
+			LeafSize = Vector3.new(1.9, 0.6, 1.9),
+			LeafColor = Color3.fromRGB(86, 156, 62),
+			CrownSize = Vector3.new(0.9, 0.45, 0.9),
+			CrownColor = Color3.fromRGB(240, 238, 228),
+		},
 		Fruit = {
 			Name = "Strawberry",
 			GrowTime = 3,
@@ -223,10 +266,15 @@ local Config = {
 		-- Backpack.
 		StartingStock = 3,
 
-		-- Taking a machine back. Held rather than tapped, and on its own key, so
-		-- it cannot be hit while spamming E to insert and collect. Without this
-		-- a misplaced factory would be permanent: it would burn one of a fixed
-		-- number of machines *and* block its cell for the rest of the round.
+		-- Taking a machine back. Currently off, so the Pick Up prompt never shows
+		-- and a placed factory stays where it was put — it burns one of a fixed
+		-- number of machines *and* blocks its cell for the rest of the round.
+		-- Flip this to bring the prompt back; the handler behind it is still wired
+		-- and still refuses a machine that is working or has a product waiting.
+		CanRemove = false,
+
+		-- Held rather than tapped, and on its own key, so taking a machine back
+		-- can never be hit while spamming E to insert and collect.
 		RemoveKey = Enum.KeyCode.X,
 		RemoveHoldDuration = 0.6,
 
@@ -245,6 +293,128 @@ local Config = {
 		-- Log the outcome of every placement, insert and collect. A refusal is
 		-- otherwise completely silent, so leave this on while developing.
 		LogRequests = true,
+	},
+
+	-- NPCs that run the whole loop on the owner's behalf: harvest a ripe fruit,
+	-- carry it to one of the owner's factories, come back for the product, walk it
+	-- to the seller. The coins land on the owner.
+	Worker = {
+		-- The pad workers stand on when idle, and spawn from. Like Farm and
+		-- Fatory this is a zone in the place file, not a marker.
+		ZoneName = "Worker",
+		FolderName = "Workers",
+
+		-- Handed out on join. There is nothing to buy more with yet, so this is
+		-- the whole supply; the rest of the service is written for any number.
+		StartingWorkers = 1,
+
+		-- Studs per second. Tuned against this map rather than against Roblox's
+		-- default 16: the farm, the factory zone and the seller sit roughly 100
+		-- studs apart, so one harvest-refine-sell round trip is a few hundred
+		-- studs of walking.
+		WalkSpeed = 22,
+
+		-- How close to its destination counts as arrived. Must stay comfortably
+		-- wider than one frame's step at WalkSpeed, or a worker overshoots and
+		-- orbits its target forever.
+		ArriveDistance = 2.5,
+
+		-- Gap left between a worker and the thing it is working on, measured from
+		-- the target's own footprint. Without it a worker stands inside the
+		-- factory it is loading.
+		StandClearance = 3,
+
+		-- Seconds between decisions while idle. Every decision rescans the
+		-- owner's plants and machines, which is wasted work every frame.
+		ThinkInterval = 0.5,
+
+		-- Pause at each stop, so picking and loading read as work being done
+		-- rather than items teleporting between buildings.
+		ActionDelay = 0.5,
+
+		-- How long a worker holding a fruit waits for one of the owner's machines
+		-- to come free before giving up and selling it raw for a fraction of what
+		-- refining it would have earned.
+		--
+		-- A worker will not pick a fruit up unless a machine is already free, so
+		-- this only fires when the owner loaded that machine by hand in the seconds
+		-- the worker spent walking to it. It exists because the alternative is a
+		-- worker that stands holding a strawberry forever, which reads as broken.
+		RefineTimeout = 12,
+
+		-- Idle workers line up along the pad's own X axis, so moving or rotating
+		-- the pad carries the posts with it. One row: more workers than the row
+		-- fits simply share posts.
+		PostSpacing = 6,
+		PostMargin = 3,
+
+		--[[ Geometry: a stock R6 rig.
+
+			The same six parts, the same names and the same 5-stud proportions as a
+			player's own character, with the built-in head mesh and face.
+
+			Built part by part rather than fetched through
+			`Players:CreateHumanoidModelFromDescription`, which yields on the avatar
+			web API: a worker has to be able to start work on a server with no
+			network, and hiring one must not block the join that hired it.
+
+			These sizes are R6's own, not tuning knobs. The joint offsets are all
+			derived from them, so they stay consistent if you change one — but the
+			rig stops matching a real character.
+		]]
+		TorsoSize = Vector3.new(2, 2, 1),
+		LimbSize = Vector3.new(1, 2, 1),
+		HeadSize = Vector3.new(2, 1, 1),
+
+		-- The classic head: a 2x1x1 block wearing the built-in Head mesh, which is
+		-- what makes it round. MeshType.Head needs no asset.
+		HeadMeshScale = Vector3.new(1.25, 1.25, 1.25),
+
+		-- A built-in texture, so the face costs no asset fetch either.
+		FaceTexture = "rbxasset://textures/face.png",
+
+		-- Two 1-wide legs side by side under a 2-wide torso put their centres half a
+		-- stud out. Arm spacing is derived from the torso and limb widths instead,
+		-- since arms hang outside the torso rather than under it.
+		LegSpacing = 0.5,
+
+		TorsoColor = Color3.fromRGB(216, 176, 92),
+		LegColor = Color3.fromRGB(52, 62, 88),
+		-- Skin on the head and arms. Bare arms are what show that a worker is
+		-- carrying something.
+		ArmColor = Color3.fromRGB(236, 202, 148),
+		HeadColor = Color3.fromRGB(236, 202, 148),
+
+		-- Cosmetic walk cycle, driven by script rather than by Roblox's animation
+		-- system — see WorkerModel for why the rig stays anchored. The phase is
+		-- accumulated from distance travelled, not from time, so a stopped worker's
+		-- limbs stop with it.
+		LegSwing = 0.7,
+		StepLength = 2.6,
+		BobHeight = 0.12,
+
+		-- Arms held out in front while carrying something, instead of swinging. The
+		-- carried item is placed at whatever this puts the hands at, so it stays in
+		-- them if you change the angle.
+		CarryArmAngle = 1.4,
+
+		-- Nameplate above the worker naming its owner and what it is doing.
+		--
+		-- Off: the rig reads as a character rather than as a labelled game object,
+		-- and with one worker per player there is nothing to tell apart. Turning it
+		-- back on is worth it while debugging, because an autonomous NPC is
+		-- otherwise a black box — a worker walking to the far side of the map looks
+		-- identical to one that is stuck. `LogActions` covers the same ground from
+		-- Output in the meantime.
+		--
+		-- Everything downstream is already conditional: no BillboardGui is built,
+		-- and `setStatus` finds nothing and returns.
+		ShowStatus = false,
+		StatusHeight = 2.2,
+
+		-- Log every pick, load, collect and sale. A worker acts with nobody
+		-- watching, so this is the only record that it is working at all.
+		LogActions = true,
 	},
 
 	Seller = {

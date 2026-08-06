@@ -46,6 +46,7 @@ The hook cannot flush unsaved Studio state to disk. **Before committing anything
 - Geometry changed via MCP in Edit mode exists only in memory until the user saves. Always tell them to save.
 - The place began as a cloud place (`PlaceId 113158059729469`) and was moved to a local file. Local saves do **not** reach Roblox — that needs **File > Publish to Roblox**.
 - `Fatory` is a typo for "Factory" but is load-bearing — it is the factory placement zone (`Config.Factory.ZoneName`). Grep for the name before renaming.
+- `Farm`, `Fatory`, `Worker` and `Seller` are all read by name out of `Config` (`PartName` / `ZoneName`). Renaming one in Studio disables that whole feature with a single warning in Output and nothing else.
 - Part positions drift between sessions because the user edits the place directly. **Never trust a coordinate recorded in this file or in conversation history — re-read it from the live place.**
 
 ## Rojo mapping
@@ -73,18 +74,20 @@ Shared (`ReplicatedStorage.Shared`):
 - **`Produce`** — one index of everything carryable and sellable, built from `Config.Plants` fruit *and* `Config.Products`. Fruit and factory products are deliberately the same shape here; that is what lets one tally and one stack-Tool mechanism hold both. Anything quoting or charging a price reads it from here — a second copy would eventually quote a number the seller does not honour.
 - **`Remotes`** — lazily creates (server) or waits for (client) `ReplicatedStorage.Remotes`, so neither side depends on load order. Access via `Remotes.event(Remotes.PLANT_SEED)` / `Remotes.func(Remotes.SELL_FRUIT)`.
 - **`Seed`** — `createPickup()` for the belt ball, `createTool()` for the Backpack item.
-- **`PlantModel`** — builds plant and fruit geometry from a species entry. `groundOf` is the inverse of `place`, so the client can recover a plant's footprint from the replicated model.
+- **`PlantModel`** — builds plant and fruit geometry from a species entry, in two stages: `create` makes a sprout, `setScale` grows it, `mature` swaps it for the true form. `groundOf` is the inverse of `place`, so the client can recover a plant's footprint from the replicated model — at any stage, since it reads the `Ground` attribute rather than the (scale-dependent) pivot.
 - **`FarmSurface`** — pure placement rules: `project` (click → point on the pad's top face) and `tooClose` (spacing). Shared **so the client's indicator cannot promise a spot the server refuses**. Add new placement rules here, not in either caller.
 - **`FactoryGrid`** — the same idea for the factory zone, but snapping to a lattice: `project` (click → centre of its grid cell) and `occupied`. Cells are measured from the zone's own centre, so moving or rotating the pad carries the grid with it — never hardcode cell coordinates.
-- **`FactoryModel`** — builds machine geometry. `groundOf` is the inverse of `place`, and `showItem` puts an item on display in the machine's slot.
+- **`FactoryModel`** — builds machine geometry and its three prompts (`InputPrompt`, `OutputPrompt`, `RemovePrompt`). `groundOf` is the inverse of `place`, and `showItem` puts an item on display in the machine's slot.
+- **`WorkerModel`** — builds the worker as a **stock R6 rig** and poses it. A genuine one: `Humanoid`, `HumanoidRootPart`, the six standard parts under their exact standard names (`"Left Arm"`, not `"LeftArm"` — the space is load-bearing to anything that reads a character), all five `Motor6D` joints, the built-in `MeshType.Head` and `rbxasset://textures/face.png`. Five studs sole to crown, like a player's own character. Built part by part rather than through `Players:CreateHumanoidModelFromDescription`, which yields on the avatar web API — hiring a worker must not block the join that hired it, and must work with no network. `setPose` recomputes every part from the spec each call (the same anti-drift rule as `PlantModel.layout`), driving a walk cycle from a phase accumulated out of *distance travelled*, so a stopped worker's legs stop too. `showItem` is `FactoryModel`'s slot idea reused: what the worker holds is visible in its hands, placed at wherever `CarryArmAngle` puts them rather than at a fixed offset.
 
 Server, started in this order by `init.server.luau` (inventory first, the rest award into it):
 
 - **`InventoryService`** — owns everything carried. Prices and item geometry come from `Produce`.
 - **`ConveyorService`** — spawns/moves/despawns belt seeds, grants on pickup.
-- **`PlantingService`** — validates plant requests, grows fruit, handles harvest.
-- **`FactoryService`** — validates factory placement, then runs each machine's insert → wait → collect cycle.
-- **`SellService`** — creates the seller prompt, settles sales.
+- **`PlantingService`** — validates plant requests, grows plants then fruit, handles harvest.
+- **`FactoryService`** — validates factory placement, then runs each machine's insert → wait → collect cycle. **`refreshPrompts` is the only thing that writes either cycle prompt's `Enabled`** — a machine shows `InputPrompt` while empty, neither while working, `OutputPrompt` once a product is ready. Add a state and you change that one function; enable a prompt anywhere else and the two can contradict each other. Both handlers still re-check the machine's state, since a trigger can be in flight when the state changes under it.
+- **`SellService`** — creates the seller prompt, settles sales. `sellCarried` pays for an item a worker walked in, which was never in the tally.
+- **`WorkerService`** — drives the NPC workers. **Started last**, because it queries the farm, the factory zone and the seller and all three must have found their fixtures first. Fully server-side: no remote, no client module, and no dependence on the owner's character existing.
 
 Client:
 
@@ -126,6 +129,40 @@ Because every award and sale now adds or removes a Tool, `ChildAdded`/`ChildRemo
 
 `leaderstats` holds `Fruit` and `Coins` only. **No DataStore persistence** — everything resets on shutdown.
 
+### Workers
+
+An NPC that runs the whole loop for its owner: harvest a ripe fruit → carry it to one of the owner's factories → come back for the product → walk it to the seller. The coins land on the owner. One is granted per player on join (`Config.Worker.StartingWorkers`); the service is written for any number.
+
+`Workspace.Worker` is a **zone**, like `Farm` and `Fatory` — not a marker. Workers spawn on it and line up along its own X axis when idle, measured from the pad's CFrame so moving or rotating it carries the posts along.
+
+**A worker is a second actor on the same farm, not a second set of rules.** It never touches `records` in `PlantingService` or `FactoryService`, and never writes a prompt's `Enabled`. Each service gives it a *query* and a *commit*, and every commit goes through the same transition a player's prompt uses. Those transitions were extracted for exactly this reason and are the invariant to protect:
+
+| Transition | Used by |
+| --- | --- |
+| `PlantingService.takeFruit` | the harvest prompt, and `pluck` |
+| `FactoryService.beginCycle` | the input prompt, and `insertItem` |
+| `FactoryService.endCycle` | the output prompt, and `collectProduct` |
+| `InventoryService.addCoins` | `sellAllItems`, `sellHeldItem`, and `sellCarried` |
+
+Add a third actor and it goes through these too. Bypass one and the two paths can diverge — a machine loaded without `beginCycle` never calls `refreshPrompts`, and then the prompt state contradicts the machine.
+
+**A worker carries exactly one item, in its hands, and it is not a second Backpack.** What it picks never enters the owner's tally, so it does not count against `Config.Inventory.MaxProduce` — a worker keeps earning while its owner's Backpack is full. The item is also visible in the world for the whole trip: what the worker holds *is* its state, the same way a factory's slot is.
+
+That one pair of hands is what shapes the job priority in `chooseJob`, and rule 5 is the subtle one: **a worker will not pick a fruit up unless there is already somewhere to put it.** Fetching one while every machine is busy strands it — it cannot collect the product that machine is about to finish without free hands, so its only outs are standing still or selling the fruit raw for a third of its refined value. Refusing the pickup is what keeps the loop out of that state. `Config.Worker.RefineTimeout` covers the leftover race where the owner loads that machine by hand while the worker is walking to it. An owner with **no** factory still gets fruit fetched and sold raw, which is verified: 12 coins a strawberry, versus 30 for a pie.
+
+**The rig is a real R6 character, but it stays `Anchored` and is posed by script.** This is the one place a worker deliberately departs from how a player's character works, and it is the same choice the belt seeds make for the same reasons: players cannot shove a worker off course, there is no jitter, and a worker cannot wedge itself against a factory base and quietly stop earning. Handing locomotion to the `Humanoid` would mean unanchored server physics plus `MoveTo`, which on this map has to push past 7×7 *colliding* machine bases — a stuck worker is a worse bug than a simpler walk cycle. Four consequences, all intentional:
+
+- **The `Motor6D` joints are structural, not what moves the limbs.** Anchored parts ignore their joints, so `setPose` writes each part's CFrame directly. Don't add an `Animation` expecting it to play — unanchor the rig first, and re-read the paragraph above before you do.
+- The `Humanoid` is set to `EvaluateStateMachine = false` and `ChangeState(Physics)`, which is the honest description of a script-posed rig. **Order matters:** while the state machine is still evaluating it overrules the change immediately and settles back on `FallingDown`, since the anchored root never touches anything. Its own name and health display are switched off, so a worker carries no floating text at all.
+- **No pathfinding.** Workers walk straight lines. Fine for a flat baseplate with pads on it; a worker will walk through anything you build in the way.
+- **A worker's height comes from where it is walking *to*, not from a raycast under it.** The pads differ by at most a stud, so easing between the surface it left and the one it is heading for is indistinguishable from following the ground at no per-frame cost. A raycast would also need to exclude the plants, the machines and the workers themselves, or a worker ends up standing on a factory roof.
+
+Parts are `CanCollide = false` **and `CanQuery = false`**. The second matters: `MouseTarget` is the client's only raycast, and a worker crossing the farm would otherwise swallow clicks meant for the ground underneath it.
+
+`setPose` is only called on frames where a worker actually moved, plus one final frame to bring its legs together. Posing a standing worker every frame would replicate ten CFrames to every client to say nothing.
+
+A worker shows **no floating text**: `Config.Worker.ShowStatus` is off, so no `BillboardGui` is built, and the Humanoid's own name plate is disabled too. That makes an autonomous NPC a black box — a worker walking to the far side of the map looks identical to one that is stuck — so turn `ShowStatus` back on while debugging one. `setStatus` and its `refreshStatus` caller stay wired either way and no-op when there is no GUI to write to; `LogActions` covers the same ground from Output.
+
 ### Server-authoritative boundaries
 
 The client sends **only a click position**. Everything else is decided server-side, and this is deliberate — don't move these checks to the client:
@@ -142,9 +179,16 @@ A rejected plant request is otherwise **completely silent**, which makes a faile
 
 ### Growth invariants
 
-- Plants appear fully formed (instant growth is intentional for now). Only **fruit** is timed — `FruitSpec.GrowTime`, currently 3s, verified at 3.001s.
-- `Regrow = true` reschedules after harvest, so one plant is a repeatable source.
-- A species with `Fruit = nil` grows but bears nothing. Only the fruit-bearing `Strawberry` exists; the field is optional so barren species need no growth-code changes.
+**Two timers, in sequence.** A seed lands as the species' `Sprout` form at `Growth.StartScale` and is scaled up by `PlantingService.stepGrowth` over `Growth.Time`; reaching `Growth.MatureScale` rebuilds the geometry as the `Mature` form — the true form — and *only then* starts the fruit timer. First fruit is therefore `Growth.Time + FruitSpec.GrowTime` away (8s + 3s for Strawberry, verified at 7.994s and 11.000s).
+
+- Only the true form fruits. `scheduleFruit` returns early unless `record.mature`, so a sprout can never bear.
+- The two forms differ in geometry, not just scale: the sprout is a pale two-part seedling, the true form adds a `Crown`. A transformation that was only a size step would be invisible against the scaling that preceded it.
+- **`stepGrowth` iterates `sprouting`, not `records`** — plants leave that list once grown, so a farm of mature plants costs nothing per frame. It also drops any plant whose `model.Parent` went nil mid-grow.
+- Scale is applied by recomputing every part's `Size` and `CFrame` from the spec (`PlantModel.setScale` → `layout`), never by stepping last frame's values, so repeated calls cannot accumulate drift. Growth is anchored at the base: the plant rises out of the ground rather than expanding about its centre.
+- **A plant's footprint is its `Ground` attribute, not its pivot.** The pivot is the stem's centre and therefore moves as the plant scales; `place` writes the attribute and `groundOf` reads it back, which is what keeps the client's spacing preview honest about a half-grown sprout. `PlantModel.fruitPosition` measures against `Mature.StemHeight` for the same reason.
+- `buildForm` destroys only `Stem`/`Leaves`/`Crown`. A ripe `Fruit` belongs to the plant, not to the form it hangs on.
+- `Regrow = true` reschedules after harvest, so one plant is a repeatable source. Regrowth restarts the *fruit* timer only — the plant stays mature at full scale and never re-sprouts.
+- A species with `Fruit = nil` grows to its true form but bears nothing. Only the fruit-bearing `Strawberry` exists; the field is optional so barren species need no growth-code changes.
 - `scheduleFruit` guards on `record.growing` / `record.fruit` and re-checks `model.Parent` after the delay, since the plant can be removed while the timer runs.
 - Belt seeds and fruit are **`Anchored`, `CanCollide = false`**, moved by script — deliberately not physics. Players can't knock them around and there's no jitter.
 - Belt seed positions are computed in **belt-local space**, so moving or rotating `Workspace.Conveyor` carries the flow with it. Never hardcode world coordinates.
@@ -189,6 +233,18 @@ A working recipe for the full loop, since driving it by hand is fiddly:
 
 **MCP round trips can exceed 3 seconds**, so a wait-then-check across two calls cannot prove a 3s timer. To time something, arm a persistent `ChildAdded`/`ChildRemoved` listener that `print`s in one call, act in a second, then read the console.
 
+### A minimized Studio window silently eats all input
+
+**Nothing that needs rendering or input works while Studio is minimized**, and none of it errors:
+
+- `user_keyboard_input` and `user_mouse_input` return `Success` and reach nothing.
+- ProximityPrompts never appear, so they cannot be triggered — `ProximityPromptService.PromptShown` never fires, and `prompt:InputHoldBegin()` from the client does nothing either.
+- `screen_capture` hangs until the tool times out and backgrounds itself.
+
+`execute_luau` keeps working throughout, so the game looks alive while every prompt in it is unreachable. This presents exactly as "the feature I just wrote does nothing".
+
+Check it before doubting the code — `IsIconic` on `RobloxStudioBeta`'s `MainWindowHandle` via `Add-Type`, or grep the Studio log for `[FLog::AutoSaveDelayOnUserInputLog] No user input within the last 5000 ms`. `ShowWindow(handle, 9)` plus `SetForegroundWindow` restores it, and prompts start working again immediately.
+
 ### When the MCP bridge is down, read the log instead
 
 **Studio writes its whole Output to disk** at `%LOCALAPPDATA%\Roblox\logs\*_Studio_*.log` (newest by `LastWriteTime` is the live session). `print` appears as `[FLog::CreatorOutput]`, `warn` as `[FLog::CreatorWarning]`, each line timestamped in UTC.
@@ -210,10 +266,12 @@ Studio blocks plugin HTTP in a play-test context, so the plugin gives up and **n
 
 ## Known gaps
 
-- Anyone can harvest anyone's plant — fruit prompts have no ownership check. Factories *do* check, so don't assume the codebase is uniform here.
+- Anyone can harvest anyone's plant — fruit prompts have no ownership check. Factories *do* check, and so do workers, so don't assume the codebase is uniform here.
 - No persistence: seeds, fruit, coins, plants and factories all reset on shutdown.
-- `Worker` has no behaviour attached yet.
+- One worker per player, fixed at `Config.Worker.StartingWorkers` — there is nothing to buy more with. The claim bookkeeping that stops two workers walking to the same strawberry is written and wired, but only ever exercised with one.
+- A worker will walk straight through anything built between two pads, and drops fruit into no queue: with one factory the loop is strictly sequential, so a farm can ripen faster than one worker can clear it.
 - Factory stock is fixed at `StartingStock` — there is no way to earn more, so `MaxPlaced` is currently unreachable. It is a guard for when there is.
 - A factory holds one item at a time and only the owner can use it; a non-owner still sees the prompt and gets a logged refusal.
+- **Placing a factory is currently permanent** — `Config.Factory.CanRemove` is off, so the Pick Up prompt never shows. A misplaced machine burns one of a fixed `StartingStock` *and* blocks its cell for the round. `onRemove` still works and still re-checks the flag server-side, so turning pick-up back on is one boolean.
 - Seeds are untyped — every seed plants `Config.DefaultSpecies`.
 - `aftman.toml` pins rojo `7.7.0-rc.1`, a release candidate, because that version was already installed locally.
