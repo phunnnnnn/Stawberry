@@ -304,18 +304,50 @@ local Config = {
 		ZoneName = "Worker",
 		FolderName = "Workers",
 
-		-- Handed out on join. There is nothing to buy more with yet, so this is
-		-- the whole supply; the rest of the service is written for any number.
-		StartingWorkers = 1,
+		-- The candidates standing on the zone waiting to be hired.
+		PoolSize = 4,
 
-		-- Studs per second. Tuned against this map rather than against Roblox's
-		-- default 16: the farm, the factory zone and the seller sit roughly 100
-		-- studs apart, so one harvest-refine-sell round trip is a few hundred
-		-- studs of walking.
-		WalkSpeed = 22,
+		-- Seconds before an unhired candidate is replaced by a fresh roll. Without
+		-- this a player who is offered four slow workers is stuck with that offer
+		-- all round.
+		RotateInterval = 45,
+
+		-- Workers one player may have at once. Coins are the near-term limit; this
+		-- is the ceiling, and also the performance one — every worker is stepped on
+		-- Heartbeat.
+		MaxHired = 3,
+
+		-- Walk speed is rolled per worker, in whole studs per second so the number
+		-- on the prompt is readable. Tuned against this map rather than against
+		-- Roblox's default 16: the farm, the factory zone and the seller sit
+		-- roughly 100 studs apart, so one harvest-refine-sell round trip is a few
+		-- hundred studs of walking. The old fixed value was 22; this brackets it.
+		MinWalkSpeed = 12,
+		MaxWalkSpeed = 30,
+
+		-- Hire price, derived from the roll:
+		--     HireBaseCost + (WalkSpeed - MinWalkSpeed) * HireCostPerStud
+		-- So the slowest worker costs HireBaseCost and the fastest 50 + 18*15 = 320.
+		-- For scale: a worker at 22 studs/s cleared roughly 100 coins a minute in
+		-- testing, so a mid-range hire pays for itself in about two minutes. A pie
+		-- is 30 coins, so the cheapest worker is two pies of hand-farming — reachable
+		-- before any income at all.
+		HireBaseCost = 50,
+		HireCostPerStud = 15,
+
+		-- Dismissing a hired worker, freeing its slot. No refund. Off switch, exactly
+		-- like Config.Factory.CanRemove: the handler stays wired either way.
+		CanDismiss = true,
+
+		-- Held rather than tapped, and on its own key, so dismissing can never be hit
+		-- while mashing E to hire.
+		DismissKey = Enum.KeyCode.X,
+		DismissHoldDuration = 0.6,
+
+		PromptRange = 12,
 
 		-- How close to its destination counts as arrived. Must stay comfortably
-		-- wider than one frame's step at WalkSpeed, or a worker overshoots and
+		-- wider than one frame's step at MaxWalkSpeed, or a worker overshoots and
 		-- orbits its target forever.
 		ArriveDistance = 2.5,
 

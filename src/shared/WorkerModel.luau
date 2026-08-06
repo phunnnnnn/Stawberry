@@ -36,6 +36,11 @@
 	The `Slot` is lifted from FactoryModel: whatever the worker is carrying sits in
 	its hands in plain sight, so its state is readable across the map with no GUI to
 	open.
+
+	`HirePrompt` and `DismissPrompt` are built here disabled, exactly like
+	FactoryModel's own prompt pair — WorkerService decides which one (if either) is
+	live and rewrites their ActionText/ObjectText per worker, since the price and
+	speed differ candidate to candidate. This module never enables one.
 ]]
 
 local Config = require(script.Parent.Config)
@@ -261,6 +266,34 @@ function WorkerModel.create(): Model
 	local slot = newPart("Slot", model)
 	slot.Size = Vector3.one
 	slot.Transparency = 1
+
+	-- One prompt per side of hiring, on the same key-sharing logic as a factory's
+	-- InputPrompt/OutputPrompt: WorkerService enables exactly one at a time, so they
+	-- are never live together and can share a key. Both ship disabled — whether a
+	-- worker is hireable or dismissable is WorkerService's decision, not this
+	-- module's, the same contract FactoryModel uses for its own prompts.
+	local hire = Instance.new("ProximityPrompt")
+	hire.Name = "HirePrompt"
+	hire.ActionText = "Hire"
+	hire.ObjectText = "Worker"
+	hire.HoldDuration = 0
+	hire.MaxActivationDistance = cfg.PromptRange
+	hire.RequiresLineOfSight = false
+	hire.Enabled = false
+	hire.Parent = torso
+
+	-- Held rather than tapped, and on its own key, so dismissing can never be hit
+	-- while mashing E to hire.
+	local dismiss = Instance.new("ProximityPrompt")
+	dismiss.Name = "DismissPrompt"
+	dismiss.ActionText = "Dismiss"
+	dismiss.ObjectText = "Worker"
+	dismiss.KeyboardKeyCode = cfg.DismissKey
+	dismiss.HoldDuration = cfg.DismissHoldDuration
+	dismiss.MaxActivationDistance = cfg.PromptRange
+	dismiss.RequiresLineOfSight = false
+	dismiss.Enabled = false
+	dismiss.Parent = torso
 
 	--[[ The rig. Offsets are relative to each part's own centre, which is why the
 		torso side of a hip is half the torso down and the leg side is half the leg

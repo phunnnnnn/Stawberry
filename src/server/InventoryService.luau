@@ -325,13 +325,27 @@ function InventoryService.heldItemName(player: Player): string?
 	return itemName :: string
 end
 
--- The one place Coins moves. Selling out of the tally comes through here, and so
--- does a worker being paid for something it carried to the stall in its hands and
--- that therefore was never in the tally at all.
+-- One of the two places Coins moves — the other is spendCoins, just below.
+-- Selling out of the tally comes through here, and so does a worker being paid
+-- for something it carried to the stall in its hands and that therefore was
+-- never in the tally at all.
 function InventoryService.addCoins(player: Player, amount: number): number
 	local coins = statValue(player, "Coins")
 	coins.Value += amount
 	return coins.Value
+end
+
+-- Spends coins, or changes nothing and returns false when the player cannot
+-- afford it. All-or-nothing, the same contract as takeItem, so a caller that goes
+-- on to hand something over — a hired worker, say — cannot half-charge for it.
+function InventoryService.spendCoins(player: Player, amount: number): boolean
+	local coins = statValue(player, "Coins")
+	if coins.Value < amount then
+		return false
+	end
+
+	coins.Value -= amount
+	return true
 end
 
 export type SaleResult = {

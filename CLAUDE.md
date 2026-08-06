@@ -87,7 +87,7 @@ Server, started in this order by `init.server.luau` (inventory first, the rest a
 - **`PlantingService`** — validates plant requests, grows plants then fruit, handles harvest.
 - **`FactoryService`** — validates factory placement, then runs each machine's insert → wait → collect cycle. **`refreshPrompts` is the only thing that writes either cycle prompt's `Enabled`** — a machine shows `InputPrompt` while empty, neither while working, `OutputPrompt` once a product is ready. Add a state and you change that one function; enable a prompt anywhere else and the two can contradict each other. Both handlers still re-check the machine's state, since a trigger can be in flight when the state changes under it.
 - **`SellService`** — creates the seller prompt, settles sales. `sellCarried` pays for an item a worker walked in, which was never in the tally.
-- **`WorkerService`** — drives the NPC workers. **Started last**, because it queries the farm, the factory zone and the seller and all three must have found their fixtures first. Fully server-side: no remote, no client module, and no dependence on the owner's character existing.
+- **`WorkerService`** — drives the NPC workers: a rotating hire pool plus every hired worker's job loop. **Started last**, because it queries the farm, the factory zone and the seller and all three must have found their fixtures first. Fully server-side: no remote and no client module — hiring and dismissing are plain ProximityPrompt triggers, and Roblox already delivers those with the triggering `Player` attached and `MaxActivationDistance` already enforced.
 
 Client:
 
@@ -131,11 +131,13 @@ Because every award and sale now adds or removes a Tool, `ChildAdded`/`ChildRemo
 
 ### Workers
 
-An NPC that runs the whole loop for its owner: harvest a ripe fruit → carry it to one of the owner's factories → come back for the product → walk it to the seller. The coins land on the owner. One is granted per player on join (`Config.Worker.StartingWorkers`); the service is written for any number.
+**Workers are hired, not granted.** A rotating pool of `Config.Worker.PoolSize` unhired candidates stands on `Workspace.Worker` at all times, each rolled its own walk speed (`MinWalkSpeed`..`MaxWalkSpeed`) and priced from it (`HireBaseCost` plus `HireCostPerStud` for every stud above the floor) at the moment it spawns — so a candidate's `HirePrompt` advertises exactly what hiring it will do and cost, because both were fixed before the prompt ever showed. A player starts with **none**. Walking up and tapping E flips that same rig's `owner` from nil to the hiring player; hiring never creates a new rig or re-rolls a stat. An unhired candidate left too long (`RotateInterval`) is destroyed and replaced with a fresh roll, so a run of bad offers is never permanent. `Config.Worker.MaxHired` caps how many one player can hold at once; `CanDismiss` (on by default) lets an owner give one back through its `DismissPrompt` — held, on its own key (`DismissKey`), so it can never be hit while tapping E to hire — with no refund, and the freed slot does **not** return to the pool.
 
-`Workspace.Worker` is a **zone**, like `Farm` and `Fatory` — not a marker. Workers spawn on it and line up along its own X axis when idle, measured from the pad's CFrame so moving or rotating it carries the posts along.
+Once hired, a worker runs the whole loop for its owner: harvest a ripe fruit → carry it to one of the owner's factories → come back for the product → walk it to the seller. The coins land on the owner. Its walk speed for the rest of its life is `worker.stats.WalkSpeed`, the value it rolled as a candidate — `advance` reads it per-worker, not from a single `Config.Worker.WalkSpeed`, so a fast hire is a real, permanent difference between rigs and not a cosmetic one.
 
-**A worker is a second actor on the same farm, not a second set of rules.** It never touches `records` in `PlantingService` or `FactoryService`, and never writes a prompt's `Enabled`. Each service gives it a *query* and a *commit*, and every commit goes through the same transition a player's prompt uses. Those transitions were extracted for exactly this reason and are the invariant to protect:
+`Workspace.Worker` is a **zone**, like `Farm` and `Fatory` — not a marker. Both unhired candidates and hired workers stand on it, lined up along its own X axis, measured from the pad's CFrame so moving or rotating it carries the posts along. Candidates occupy the first `PoolSize` post slots; hired workers take slots counting up from there and never give one back, since posts are cosmetic and there is nothing to reclaim.
+
+**A worker is a second actor on the same farm, not a second set of rules.** It never touches `records` in `PlantingService` or `FactoryService`, and only ever writes its *own* hire/dismiss prompt pair. Each service gives it a *query* and a *commit*, and every commit goes through the same transition a player's prompt uses. Those transitions were extracted for exactly this reason and are the invariant to protect:
 
 | Transition | Used by |
 | --- | --- |
@@ -143,10 +145,11 @@ An NPC that runs the whole loop for its owner: harvest a ripe fruit → carry it
 | `FactoryService.beginCycle` | the input prompt, and `insertItem` |
 | `FactoryService.endCycle` | the output prompt, and `collectProduct` |
 | `InventoryService.addCoins` | `sellAllItems`, `sellHeldItem`, and `sellCarried` |
+| `InventoryService.spendCoins` | hiring — the only other place `Coins` moves |
 
-Add a third actor and it goes through these too. Bypass one and the two paths can diverge — a machine loaded without `beginCycle` never calls `refreshPrompts`, and then the prompt state contradicts the machine.
+Add a third actor and it goes through these too. Bypass one and the two paths can diverge — a machine loaded without `beginCycle` never calls `refreshPrompts`, and then the prompt state contradicts the machine. `WorkerService.refreshHirePrompt` guards the same kind of invariant for hiring: it is the only thing that writes either `HirePrompt`'s or `DismissPrompt`'s `Enabled`, so a hired worker can never be left still advertising itself for hire.
 
-**A worker carries exactly one item, in its hands, and it is not a second Backpack.** What it picks never enters the owner's tally, so it does not count against `Config.Inventory.MaxProduce` — a worker keeps earning while its owner's Backpack is full. The item is also visible in the world for the whole trip: what the worker holds *is* its state, the same way a factory's slot is.
+**A worker carries exactly one item, in its hands, and it is not a second Backpack.** What it picks never enters the owner's tally, so it does not count against `Config.Inventory.MaxProduce` — a worker keeps earning while its owner's Backpack is full. The item is also visible in the world for the whole trip: what the worker holds *is* its state, the same way a factory's slot is. It is also why dismissal refuses a worker that is carrying something: the item was never in the tally, so dismissing mid-trip would destroy it with no record anywhere — the same shape as a factory refusing pick-up mid-cycle.
 
 That one pair of hands is what shapes the job priority in `chooseJob`, and rule 5 is the subtle one: **a worker will not pick a fruit up unless there is already somewhere to put it.** Fetching one while every machine is busy strands it — it cannot collect the product that machine is about to finish without free hands, so its only outs are standing still or selling the fruit raw for a third of its refined value. Refusing the pickup is what keeps the loop out of that state. `Config.Worker.RefineTimeout` covers the leftover race where the owner loads that machine by hand while the worker is walking to it. An owner with **no** factory still gets fruit fetched and sold raw, which is verified: 12 coins a strawberry, versus 30 for a pie.
 
@@ -267,9 +270,12 @@ Studio blocks plugin HTTP in a play-test context, so the plugin gives up and **n
 ## Known gaps
 
 - Anyone can harvest anyone's plant — fruit prompts have no ownership check. Factories *do* check, and so do workers, so don't assume the codebase is uniform here.
-- No persistence: seeds, fruit, coins, plants and factories all reset on shutdown.
-- One worker per player, fixed at `Config.Worker.StartingWorkers` — there is nothing to buy more with. The claim bookkeeping that stops two workers walking to the same strawberry is written and wired, but only ever exercised with one.
-- A worker will walk straight through anything built between two pads, and drops fruit into no queue: with one factory the loop is strictly sequential, so a farm can ripen faster than one worker can clear it.
+- No persistence: seeds, fruit, coins, plants, factories and hired workers all reset on shutdown — including whatever a player spent hiring them.
+- A worker will walk straight through anything built between two pads, and drops fruit into no queue: several workers sharing one factory contend for it exactly the way two players would, so a farm can ripen faster than a small factory count can clear it.
+- Dismissing a moving worker means catching it — it pauses at each stop and walks predictable routes, so it is possible, but there is no way to recall one home first.
+- A dismissed worker's slot is not returned to the pool, and neither is a departing player's — both are simply gone rather than reissued. There is no persistence anyway, so this only matters within a single round.
+- Unhired candidates look identical to hired ones apart from which prompt they show. A distinct look while unhired (a different shirt colour, say) would read better at a glance across the whole pad.
+- Stats are rolled uniformly across `MinWalkSpeed`..`MaxWalkSpeed`, with no rarity curve, and walk speed is the only one that exists. `WorkerStats` is already a table rather than a bare number so a second stat would not change every signature that passes one around — but none has been added.
 - Factory stock is fixed at `StartingStock` — there is no way to earn more, so `MaxPlaced` is currently unreachable. It is a guard for when there is.
 - A factory holds one item at a time and only the owner can use it; a non-owner still sees the prompt and gets a logged refusal.
 - **Placing a factory is currently permanent** — `Config.Factory.CanRemove` is off, so the Pick Up prompt never shows. A misplaced machine burns one of a fixed `StartingStock` *and* blocks its cell for the round. `onRemove` still works and still re-checks the flag server-side, so turning pick-up back on is one boolean.
