@@ -1,10 +1,12 @@
 --!strict
 
 local PlantingController = require(script.PlantingController)
+local FactoryController = require(script.FactoryController)
 local SellDialogue = require(script.SellDialogue)
 
 -- Gameplay first.
 PlantingController.start()
+FactoryController.start()
 SellDialogue.start()
 
 -- Display-only modules go after it, each behind its own pcall: a require error
@@ -19,6 +21,10 @@ end
 
 startDisplay("PlantIndicator", function()
 	require(script.PlantIndicator).start()
+end)
+
+startDisplay("FactoryIndicator", function()
+	require(script.FactoryIndicator).start()
 end)
 
 startDisplay("FruitInspector", function()

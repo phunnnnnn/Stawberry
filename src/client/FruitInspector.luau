@@ -1,12 +1,13 @@
 --!strict
 
 --[[
-	Price card shown while a fruit is held.
+	Price card shown while produce is held.
 
-	Equipping a fruit is how you inspect it before selling: the card names it,
-	gives the unit price, and totals what you are carrying of that species. Prices
-	come from Config.Plants — the same table SellService charges against — so the
-	number quoted here is the number you get paid.
+	Equipping an item is how you inspect it before selling: the card names it,
+	gives the unit price, and totals what you are carrying of it. Prices come
+	from Produce — the same index InventoryService charges against — so the
+	number quoted here is the number you get paid, for a factory pie as much as
+	for a strawberry.
 
 	Display only. Nothing here can change a sale.
 ]]
@@ -14,7 +15,7 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local Config = require(ReplicatedStorage.Shared.Config)
+local Produce = require(ReplicatedStorage.Shared.Produce)
 
 type Card = {
 	gui: ScreenGui,
@@ -26,23 +27,12 @@ local FruitInspector = {}
 
 local player = Players.LocalPlayer
 
--- Must match the attribute names InventoryService tags the stack Tool with.
+-- Must match the attribute InventoryService tags produce Tools with.
 local FRUIT_ATTRIBUTE = "FruitName"
-local COUNT_ATTRIBUTE = "FruitCount"
 
-local prices: { [string]: number } = {}
 local card: Card? = nil
 
-local function indexPrices()
-	for _, spec in pairs(Config.Plants) do
-		local fruitSpec = spec.Fruit
-		if fruitSpec then
-			prices[fruitSpec.Name] = fruitSpec.SellPrice
-		end
-	end
-end
-
--- The equipped fruit stack Tool, identified by the attribute InventoryService
+-- The equipped stack Tool, identified by the attribute InventoryService
 -- tags it with rather than by name — the same selector SellDialogue uses.
 local function heldFruit(): (Tool?, string?)
 	local character = player.Character
@@ -61,14 +51,29 @@ local function heldFruit(): (Tool?, string?)
 	return nil, nil
 end
 
--- Quantity comes off the Tool's replicated attribute. Counting Tools would give
--- 1 every time: there is one stack Tool per species, not one per fruit.
-local function countHeld(tool: Tool): number
-	local count = tool:GetAttribute(COUNT_ATTRIBUTE)
-	if typeof(count) == "number" then
-		return math.max(0, math.floor(count :: number))
+-- Produce does not stack, so one Tool is exactly one item and counting them is
+-- the quantity. Both containers are searched because equipping moves a Tool
+-- from the Backpack to the character — miss that and holding one of three
+-- strawberries reports two.
+local function countHeld(itemName: string): number
+	local containers: { Instance } = {}
+	local backpack = player:FindFirstChildOfClass("Backpack")
+	if backpack then
+		table.insert(containers, backpack)
 	end
-	return 0
+	if player.Character then
+		table.insert(containers, player.Character)
+	end
+
+	local count = 0
+	for _, container in ipairs(containers) do
+		for _, child in ipairs(container:GetChildren()) do
+			if child:IsA("Tool") and child:GetAttribute(FRUIT_ATTRIBUTE) == itemName then
+				count += 1
+			end
+		end
+	end
+	return count
 end
 
 local function build(): Card
@@ -144,8 +149,8 @@ local function refresh()
 		return
 	end
 
-	local price = prices[fruitName] or 0
-	local count = countHeld(tool)
+	local price = Produce.price(fruitName)
+	local count = countHeld(fruitName)
 
 	shown.title.Text = fruitName
 	shown.detail.Text = ("<b>%d</b> coins each\nCarrying %d — worth <b>%d</b> coins")
@@ -154,7 +159,6 @@ local function refresh()
 end
 
 function FruitInspector.start()
-	indexPrices()
 	card = build()
 
 	local function watchContainer(container: Instance)
@@ -187,9 +191,10 @@ function FruitInspector.start()
 		watchContainer(character)
 	end
 
-	-- Harvesting more of a species you already hold updates the existing Tool's
-	-- attribute rather than adding one, so no container signal fires. The fruit
-	-- stat moves on every award and sale, which makes it the reliable trigger.
+	-- Now that produce does not stack, every award and sale adds or removes a
+	-- Tool, so the container signals above already cover quantity changes. The
+	-- stat is kept as a backstop: it moves on every one of them, and it costs a
+	-- single connection to be certain the card never shows a stale count.
 	task.spawn(function()
 		local stats = player:WaitForChild("leaderstats", 30)
 		local fruitStat = stats and stats:WaitForChild("Fruit", 30)

@@ -13,6 +13,7 @@ local WAIT_TIMEOUT = 30
 
 local Remotes = {
 	PLANT_SEED = "PlantSeed",
+	PLACE_FACTORY = "PlaceFactory",
 	SELL_FRUIT = "SellFruit",
 }
 

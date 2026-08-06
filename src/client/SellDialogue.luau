@@ -13,6 +13,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 
 local Config = require(ReplicatedStorage.Shared.Config)
+local Produce = require(ReplicatedStorage.Shared.Produce)
 local Remotes = require(ReplicatedStorage.Shared.Remotes)
 
 local SellDialogue = {}
@@ -34,19 +35,41 @@ type SaleResponse = {
 	reason: string?,
 }
 
-local function fruitCount(): number
-	local stats = player:FindFirstChild("leaderstats")
-	local fruit = stats and stats:FindFirstChild("Fruit")
-	if fruit and fruit:IsA("IntValue") then
-		return fruit.Value
+-- Everything carried, and what the seller will pay for it.
+--
+-- Summed over the produce Tools rather than multiplying the Fruit stat by one
+-- species' price: with factory products in the mix the carried stock is no
+-- longer all the same item, and quoting a pie at strawberry money would be a
+-- promise the seller does not keep. Produce does not stack, so each Tool counts
+-- as exactly one item.
+--
+-- Both numbers come from the Tools so they always agree with each other; the
+-- Fruit stat is only the trigger that tells us to look again.
+local function carried(): (number, number)
+	local containers: { Instance } = {}
+	local backpack = player:FindFirstChildOfClass("Backpack")
+	if backpack then
+		table.insert(containers, backpack)
 	end
-	return 0
-end
+	if player.Character then
+		table.insert(containers, player.Character)
+	end
 
-local function unitPrice(): number
-	local spec = Config.Plants[Config.DefaultSpecies]
-	local fruitSpec = spec and spec.Fruit
-	return if fruitSpec then fruitSpec.SellPrice else 0
+	local count = 0
+	local value = 0
+	for _, container in ipairs(containers) do
+		for _, child in ipairs(container:GetChildren()) do
+			if child:IsA("Tool") then
+				local itemName = child:GetAttribute("FruitName")
+				if typeof(itemName) == "string" then
+					count += 1
+					value += Produce.price(itemName :: string)
+				end
+			end
+		end
+	end
+
+	return count, value
 end
 
 local function heldFruitName(): string?
@@ -66,11 +89,10 @@ local function heldFruitName(): string?
 end
 
 local function refresh()
-	local count = fruitCount()
-	local price = unitPrice()
+	local count, value = carried()
 	local held = heldFruitName()
 
-	fruitLabel.Text = ("Fruit: %d    Value: %d coins"):format(count, count * price)
+	fruitLabel.Text = ("Produce: %d    Value: %d coins"):format(count, value)
 
 	sellAllButton.Text = if count > 0 then ("Sell All (%d)"):format(count) else "Sell All (Nothing to sell)"
 	sellAllButton.Active = count > 0
@@ -108,7 +130,10 @@ local function requestSale(mode: string, button: TextButton)
 		if sale.itemName then
 			statusLabel.Text = ("Sold 1 %s for %d coins."):format(sale.itemName, sale.earned)
 		else
-			statusLabel.Text = ("Sold %d fruit for %d coins."):format(sale.sold, sale.earned)
+			-- A Sell All can mix fruit and factory products, so it cannot name
+			-- what went.
+			statusLabel.Text = ("Sold %d %s for %d coins."):format(
+				sale.sold, if sale.sold == 1 then "item" else "items", sale.earned)
 		end
 	else
 		statusLabel.TextColor3 = Color3.fromRGB(210, 140, 140)

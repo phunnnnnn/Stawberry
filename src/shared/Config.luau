@@ -28,6 +28,19 @@ export type PlantSpec = {
 	Fruit: FruitSpec?,
 }
 
+-- What a factory turns `Source` into. Products are carried, priced and sold
+-- through exactly the same machinery as harvested fruit — see Produce — so the
+-- only thing that makes a pie a pie is this entry.
+export type ProductSpec = {
+	Name: string,
+	-- Fruit consumed, one per run. Must match a FruitSpec.Name.
+	Source: string,
+	ProcessTime: number,
+	SellPrice: number,
+	Size: Vector3,
+	Color: Color3,
+}
+
 local Plants: { [string]: PlantSpec } = {
 	Strawberry = {
 		DisplayName = "Strawberry",
@@ -48,6 +61,18 @@ local Plants: { [string]: PlantSpec } = {
 			-- Studs above the top of the stem.
 			HeightOffset = 0.8,
 		},
+	},
+}
+
+local Products: { [string]: ProductSpec } = {
+	["Strawberry Pie"] = {
+		Name = "Strawberry Pie",
+		Source = "Strawberry",
+		ProcessTime = 3,
+		-- The whole point of the factory: worth more than the fruit it ate.
+		SellPrice = 30,
+		Size = Vector3.new(1.8, 0.7, 1.8),
+		Color = Color3.fromRGB(214, 152, 96),
 	},
 }
 
@@ -106,6 +131,17 @@ local Config = {
 		MaxHeld = 20,
 	},
 
+	Inventory = {
+		-- Backpack cap across all produce, fruit and factory products together.
+		-- Produce does not stack — every item is its own Tool — so without a cap
+		-- one productive farm buries the Backpack in identical strawberries.
+		--
+		-- At the cap, harvesting and collecting *refuse* rather than silently
+		-- swallowing the item: the fruit stays on the plant and the pie stays in
+		-- the machine, so nothing is ever destroyed for lack of room.
+		MaxProduce = 30,
+	},
+
 	-- Board ranking players by coins. leaderstats already feeds Roblox's own
 	-- player list; this is the always-visible version of the same numbers.
 	Leaderboard = {
@@ -159,6 +195,58 @@ local Config = {
 		ReasonHeight = 3,
 	},
 
+	Factory = {
+		-- The zone machines may be placed on. "Fatory" is a typo in the place
+		-- file and load-bearing — grep before renaming it.
+		ZoneName = "Fatory",
+		FolderName = "Factories",
+
+		-- Tool name in the Backpack. One Tool carries the whole unplaced stock
+		-- as a count attribute, the way a fruit stack does.
+		ToolName = "Factory",
+
+		-- Placement lattice, in studs. Cells are measured from the zone's own
+		-- centre, so the grid moves and rotates with the pad instead of being
+		-- pinned to world origin.
+		GridSize = 8,
+
+		-- Keep a machine's whole footprint off the lip of the pad, not just the
+		-- point that was clicked.
+		EdgeMargin = 2,
+
+		-- Server-side guards on placement requests, mirroring the farm's.
+		MaxPlaceDistance = 60,
+		MaxPlaced = 6,
+		PlaceCooldown = 0.2,
+
+		-- Handed out on join, and re-issued after a respawn replaces the
+		-- Backpack.
+		StartingStock = 3,
+
+		-- Taking a machine back. Held rather than tapped, and on its own key, so
+		-- it cannot be hit while spamming E to insert and collect. Without this
+		-- a misplaced factory would be permanent: it would burn one of a fixed
+		-- number of machines *and* block its cell for the rest of the round.
+		RemoveKey = Enum.KeyCode.X,
+		RemoveHoldDuration = 0.6,
+
+		BaseSize = Vector3.new(7, 1, 7),
+		BaseColor = Color3.fromRGB(72, 76, 84),
+		BodySize = Vector3.new(5, 3.5, 5),
+		BodyColor = Color3.fromRGB(148, 122, 96),
+
+		-- Studs between the top of the body and the item on display in the
+		-- slot. The slot is the machine's whole interface: what sits there is
+		-- what is inside it.
+		SlotOffset = 0.9,
+
+		PromptRange = 12,
+
+		-- Log the outcome of every placement, insert and collect. A refusal is
+		-- otherwise completely silent, so leave this on while developing.
+		LogRequests = true,
+	},
+
 	Seller = {
 		PartName = "Seller",
 		PromptRange = 14,
@@ -172,6 +260,7 @@ local Config = {
 	},
 
 	Plants = Plants,
+	Products = Products,
 }
 
 return Config

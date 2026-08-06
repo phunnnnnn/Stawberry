@@ -35,12 +35,12 @@ local function resolveSale(player: Player, mode: unknown): InventoryService.Sale
 	end
 
 	if mode == "held" then
-		return InventoryService.sellHeldFruit(player)
+		return InventoryService.sellHeldItem(player)
 	end
 	if mode ~= nil and mode ~= "all" then
 		return { sold = 0, earned = 0, reason = "Unknown sale option." }
 	end
-	return InventoryService.sellAllFruit(player)
+	return InventoryService.sellAllItems(player)
 end
 
 -- A refused sale only ever surfaced in the player's own dialogue, so from
@@ -52,7 +52,10 @@ local function onSellRequest(player: Player, mode: unknown): InventoryService.Sa
 	if Config.Seller.LogSales then
 		if result.sold > 0 then
 			print(("[SellService] %s sold %d %s for %d coins."):format(
-				player.Name, result.sold, result.itemName or "fruit", result.earned))
+				player.Name,
+				result.sold,
+				result.itemName or (if result.sold == 1 then "item" else "items"),
+				result.earned))
 		else
 			warn(("[SellService] %s sale refused (mode %s): %s"):format(
 				player.Name, tostring(mode), result.reason or "no reason given"))

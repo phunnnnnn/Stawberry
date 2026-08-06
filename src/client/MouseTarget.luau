@@ -7,9 +7,9 @@
 	exactly the position a click reports — two separate raycasts could disagree
 	and show green on a spot the server then refuses.
 
-	Existing plants and belt seeds are excluded so you can aim "through" them
-	onto the farm pad. The indicator's own discs set CanQuery = false, so they
-	are skipped without needing to be listed here.
+	Existing plants, belt seeds and placed factories are excluded so you can aim
+	"through" them onto the pad behind. The indicators' own discs and squares set
+	CanQuery = false, so they are skipped without needing to be listed here.
 ]]
 
 local Players = game:GetService("Players")
@@ -39,6 +39,11 @@ function MouseTarget.raycast(): RaycastResult?
 	local beltSeeds = Workspace:FindFirstChild(Config.Conveyor.SeedFolderName)
 	if beltSeeds then
 		table.insert(ignored, beltSeeds)
+	end
+
+	local factories = Workspace:FindFirstChild(Config.Factory.FolderName)
+	if factories then
+		table.insert(ignored, factories)
 	end
 
 	local params = RaycastParams.new()

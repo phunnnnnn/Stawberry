@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Roblox tycoon-style game ("Stawberry" — the misspelling is the project name), synced into Roblox Studio with Rojo. One gameplay loop is implemented end to end: a conveyor produces seeds → plant them on the farm → harvest fruit → sell at the seller.
+A Roblox tycoon-style game ("Stawberry" — the misspelling is the project name), synced into Roblox Studio with Rojo. One gameplay loop is implemented end to end: a conveyor produces seeds → plant them on the farm → harvest fruit → optionally refine it in a factory → sell at the seller.
 
 ## Commands
 
@@ -45,7 +45,7 @@ The hook cannot flush unsaved Studio state to disk. **Before committing anything
 - `rojo build` output contains **no map** — scripts only. It is not a playable place.
 - Geometry changed via MCP in Edit mode exists only in memory until the user saves. Always tell them to save.
 - The place began as a cloud place (`PlaceId 113158059729469`) and was moved to a local file. Local saves do **not** reach Roblox — that needs **File > Publish to Roblox**.
-- `Fatory` is a typo for "Factory" but is load-bearing — grep for the name before renaming.
+- `Fatory` is a typo for "Factory" but is load-bearing — it is the factory placement zone (`Config.Factory.ZoneName`). Grep for the name before renaming.
 - Part positions drift between sessions because the user edits the place directly. **Never trust a coordinate recorded in this file or in conversation history — re-read it from the live place.**
 
 ## Rojo mapping
@@ -69,37 +69,60 @@ Getting this wrong is the most likely cause of a "not a valid member" error afte
 
 Shared (`ReplicatedStorage.Shared`):
 
-- **`Config`** — data only, no behaviour. All tuning plus the `PlantSpec`/`FruitSpec` types. Prefer adding a config value over hardcoding.
+- **`Config`** — data only, no behaviour. All tuning plus the `PlantSpec`/`FruitSpec`/`ProductSpec` types. Prefer adding a config value over hardcoding.
+- **`Produce`** — one index of everything carryable and sellable, built from `Config.Plants` fruit *and* `Config.Products`. Fruit and factory products are deliberately the same shape here; that is what lets one tally and one stack-Tool mechanism hold both. Anything quoting or charging a price reads it from here — a second copy would eventually quote a number the seller does not honour.
 - **`Remotes`** — lazily creates (server) or waits for (client) `ReplicatedStorage.Remotes`, so neither side depends on load order. Access via `Remotes.event(Remotes.PLANT_SEED)` / `Remotes.func(Remotes.SELL_FRUIT)`.
 - **`Seed`** — `createPickup()` for the belt ball, `createTool()` for the Backpack item.
 - **`PlantModel`** — builds plant and fruit geometry from a species entry. `groundOf` is the inverse of `place`, so the client can recover a plant's footprint from the replicated model.
 - **`FarmSurface`** — pure placement rules: `project` (click → point on the pad's top face) and `tooClose` (spacing). Shared **so the client's indicator cannot promise a spot the server refuses**. Add new placement rules here, not in either caller.
+- **`FactoryGrid`** — the same idea for the factory zone, but snapping to a lattice: `project` (click → centre of its grid cell) and `occupied`. Cells are measured from the zone's own centre, so moving or rotating the pad carries the grid with it — never hardcode cell coordinates.
+- **`FactoryModel`** — builds machine geometry. `groundOf` is the inverse of `place`, and `showItem` puts an item on display in the machine's slot.
 
 Server, started in this order by `init.server.luau` (inventory first, the rest award into it):
 
-- **`InventoryService`** — owns everything carried. Also indexes fruit → price from `Config.Plants` at startup.
+- **`InventoryService`** — owns everything carried. Prices and item geometry come from `Produce`.
 - **`ConveyorService`** — spawns/moves/despawns belt seeds, grants on pickup.
 - **`PlantingService`** — validates plant requests, grows fruit, handles harvest.
+- **`FactoryService`** — validates factory placement, then runs each machine's insert → wait → collect cycle.
 - **`SellService`** — creates the seller prompt, settles sales.
 
 Client:
 
-- **`MouseTarget`** — the one raycast under the cursor. `PlantingController` and `PlantIndicator` both use it; two separate raycasts could disagree and the preview would lie.
+- **`MouseTarget`** — the one raycast under the cursor. Every controller and indicator uses it; two separate raycasts could disagree and the preview would lie.
+- **`ToolWatcher`** — the single answer to "the player activated a Tool called X". Owns the equip-cycle and respawn bookkeeping described under *Client gotchas*; `PlantingController` and `FactoryController` are thin handlers registered against it. **Add new tool-driven actions here rather than re-implementing the container watching**, which is exactly the bug that cost hours below.
 - **`PlantingController`** — reports where the player clicked while holding a seed.
+- **`FactoryController`** — the same for a held factory. It sends the raw click; snapping happens server-side, so a client that snapped differently could only disagree.
+- **`FactoryIndicator`** — preview square for the grid cell a factory will land on. Display-only. Snap-to-grid is invisible without it: the machine goes to the middle of the cell, not to the click.
 - **`PlantIndicator`** — `RenderStepped` preview disc, green where the click will land, red plus a reason where it won't. Cosmetic: it re-checks `FarmSurface` rules for *feedback* and changes no outcome. It cannot preview `MaxPlantsPerPlayer`, which the client has no way to read.
-- **`FruitInspector`** — price card shown while a fruit stack Tool is equipped: unit price, quantity, total value.
+- **`FruitInspector`** — price card shown while produce is equipped: unit price, how many of that item you carry, total value.
 - **`Leaderboard`** — always-visible board ranking players by `Coins`, read straight off each player's `leaderstats`.
 - **`SellDialogue`** — code-built ScreenGui, opened by the seller prompt.
 
-`PlantIndicator`, `FruitInspector` and `Leaderboard` are display-only and each starts behind its own `pcall` in `init.client.luau`. That is deliberate: a require error in a cosmetic module previously killed the whole LocalScript and silently disabled planting.
+`PlantIndicator`, `FactoryIndicator`, `FruitInspector` and `Leaderboard` are display-only and each starts behind its own `pcall` in `init.client.luau`. That is deliberate: a require error in a cosmetic module previously killed the whole LocalScript and silently disabled planting.
 
 ### Inventory model
 
 Seeds are **Tools in the Backpack** — that Tool list *is* the seed inventory, so there is no parallel seed counter to drift. `InventoryService.seedCount` therefore counts both the Backpack *and* the character, because an equipped tool moves to the character.
 
-Fruit is a server-side per-species tally (`fruitByPlayer`), mirrored to `leaderstats.Fruit` as a display-only total. Keeping the tally per-species is what lets sales price each fruit correctly; don't collapse it to a single number. Each species also has one generated stack Tool marked with a `FruitName` attribute so the player can equip that produce. The Tool only selects the held species; the server tally remains authoritative. `Sell All` clears every stack, while `Sell Thing That I Hold` sells one unit from the equipped stack.
+Produce — harvested fruit **and factory products alike** — is a server-side per-item tally (`itemsByPlayer`), mirrored to `leaderstats.Fruit` as a display-only total. Keeping the tally per-item is what lets sales price each thing correctly; don't collapse it to a single number.
 
-The stack Tool carries two attributes: `FruitName` (the selector) and `FruitCount` (the held quantity, mirrored for display). **A client must never derive quantity by counting Tools** — there is one Tool per species, so counting always yields 1. `FruitInspector` reads `FruitCount`; anything that pays out reads the tally. Because harvesting more of a species you already hold mutates that Tool rather than adding one, no `ChildAdded` fires — watch `leaderstats.Fruit` for a quantity change instead.
+**Produce does not stack.** The tally materialises as one Tool per item, each marked with a `FruitName` attribute — three strawberries are three Tools. `syncItemTools` reconciles the Tools to the tally in both directions and is safe to call after any change.
+
+The tally is kept rather than letting the Tool list simply *be* the truth (as it is for seeds) for one reason: the Backpack is replaced on respawn, and rebuilding from a server-side number is what stops death from wiping an inventory. **The Tools mirror the tally; the tally never mirrors the Tools.** Anything that pays out reads the tally.
+
+Because one Tool is exactly one item, **counting Tools is now a correct way to get a quantity** — the reverse of the older stacked design, which had a single Tool carrying a `FruitCount` attribute. That attribute is gone; anything still reading it is stale. Count across the Backpack *and* the character, since equipping moves a Tool between them.
+
+`Sell All` clears everything, while `Sell Thing That I Hold` sells the one equipped item. Selling trims from the front of the Tool list, which keeps the equipped one — sell one of three and your hand stays full.
+
+A pie is held, priced and sold by exactly the same code as a strawberry — `Produce` is the only thing that tells them apart, and only `FactoryService` cares. The replicated names predate products and are kept deliberately: `leaderstats.Fruit` and the `FruitName` attribute are a wire contract with the client modules, so they say "fruit" while meaning "produce". The *functions* were renamed to match reality (`addItem`, `takeItem`, `sellAllItems`, `sellHeldItem`).
+
+**`addItem` can partially fail.** Since every item costs a Backpack slot, it is capped by `Config.Inventory.MaxProduce` and returns how many actually fit. Callers must check the return: harvesting leaves the fruit on the plant and the factory leaves the pie in its slot rather than destroying something the player never received. Award first, destroy second — never the reverse.
+
+Unplaced factories work the same way: one `Factory` Tool carrying the whole stock as a `FactoryCount` attribute, rebuilt from a server-side number. That is what makes it survive a respawn replacing the Backpack.
+
+Note the asymmetry: **factory stock stacks, produce does not.** One `Factory` Tool with a count, but one Tool per strawberry. That is deliberate — you place factories one at a time from a pile, whereas produce is meant to be individually visible and equippable in the hotbar.
+
+Because every award and sale now adds or removes a Tool, `ChildAdded`/`ChildRemoved` fire on every quantity change and are a sufficient trigger for client refreshes. (`leaderstats.Fruit` still moves on all of them and is kept as a backstop.)
 
 `leaderstats` holds `Fruit` and `Coins` only. **No DataStore persistence** — everything resets on shutdown.
 
@@ -111,7 +134,9 @@ The client sends **only a click position**. Everything else is decided server-si
 - the player must actually hold a seed Tool, be within `MaxPlantDistance`, respect `PlantCooldown`, `MinPlantSpacing` and `MaxPlantsPerPlayer`
 - the seed is consumed **only after every check passes**
 - selling re-checks distance to the seller; the dialogue proves nothing
-- the fruit stack Tool's `FruitName` attribute is **only a selector** — `sellHeldFruit` re-reads quantity and price from server state before paying out
+- a produce Tool's `FruitName` attribute is **only a selector** — `sellHeldItem` re-reads quantity and price from server state before paying out
+
+The factory repeats the same shape. The client sends a click position; the server snaps it, and checks the cell is on the zone and free, that the player holds the `Factory` Tool, is within `MaxPlaceDistance`, has stock left and is under `MaxPlaced`. Stock is consumed only after every check passes. Inserting re-reads the fruit count from the tally rather than trusting the equipped Tool, and only the owner may use or pick up a machine.
 
 A rejected plant request is otherwise **completely silent**, which makes a failed click undiagnosable. Every gate in `onPlantRequest` now names itself in Output via `refuse`, gated on `Config.Farm.LogPlantRequests`. When you add a rule to `FarmSurface` both sides pick it up; add one only to `PlantingService` and the indicator will show green on a spot that fails.
 
@@ -126,7 +151,9 @@ A rejected plant request is otherwise **completely silent**, which makes a faile
 
 ### Client gotchas
 
-Equipping moves a Tool to the character and unequipping moves it back, so `Backpack.ChildAdded` fires repeatedly for the same tool. `PlantingController` keeps a `watched` set — without it, each equip cycle adds another `Activated` connection and one click plants twice.
+Both of the following now live in **`ToolWatcher`** and nowhere else. Register a handler with `ToolWatcher.onActivated(name, fn)` rather than watching containers yourself — a second copy is a second chance to get these wrong.
+
+Equipping moves a Tool to the character and unequipping moves it back, so `Backpack.ChildAdded` fires repeatedly for the same tool. `ToolWatcher` keeps a `watched` set — without it, each equip cycle adds another `Activated` connection and one click plants twice.
 
 **Respawning replaces the Backpack.** Binding to whichever Backpack exists at startup breaks permanently after the first death: seeds land in a container nobody is watching and clicks do nothing, with no error. Re-attach on `Player.ChildAdded` for a new `Backpack` and on `CharacterAdded`. This cost hours to find — it presents exactly as "planting worked, then stopped".
 
@@ -183,8 +210,10 @@ Studio blocks plugin HTTP in a play-test context, so the plugin gives up and **n
 
 ## Known gaps
 
-- Anyone can harvest anyone's plant — fruit prompts have no ownership check.
-- No persistence: seeds, fruit, coins and plants all reset on shutdown.
-- `Worker` and `Fatory` have no behaviour attached yet.
+- Anyone can harvest anyone's plant — fruit prompts have no ownership check. Factories *do* check, so don't assume the codebase is uniform here.
+- No persistence: seeds, fruit, coins, plants and factories all reset on shutdown.
+- `Worker` has no behaviour attached yet.
+- Factory stock is fixed at `StartingStock` — there is no way to earn more, so `MaxPlaced` is currently unreachable. It is a guard for when there is.
+- A factory holds one item at a time and only the owner can use it; a non-owner still sees the prompt and gets a logged refusal.
 - Seeds are untyped — every seed plants `Config.DefaultSpecies`.
 - `aftman.toml` pins rojo `7.7.0-rc.1`, a release candidate, because that version was already installed locally.

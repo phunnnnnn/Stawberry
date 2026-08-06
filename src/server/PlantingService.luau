@@ -115,12 +115,16 @@ local function scheduleFruit(record: PlantRecord)
 					return
 				end
 
+				-- Award *before* destroying anything. Produce no longer stacks, so
+				-- every fruit needs its own Backpack slot and this can legitimately
+				-- fail; picking the fruit first would destroy it for nothing.
+				if InventoryService.addItem(player, fruitSpec.Name, 1) < 1 then
+					refuse(player, "backpack is full — the %s stays on the plant", fruitSpec.Name)
+					return
+				end
+
 				record.fruit = nil
 				fruit:Destroy()
-
-				-- The tally always accepts, so there is no capacity case to guard
-				-- here: the stack Tool is reconciled from it, not the reverse.
-				InventoryService.addFruit(player, fruitSpec.Name, 1)
 
 				if Config.Farm.LogPlantRequests then
 					print(("[PlantingService] %s harvested %s"):format(player.Name, fruitSpec.Name))
