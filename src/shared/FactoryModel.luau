@@ -18,6 +18,18 @@
 	(at a distance), a row of pips you can count (up close), and the prompts'
 	own ObjectText (once you are in range to press anything). The tier is also
 	written to an attribute, which is what the client reads — never the colour.
+
+	**Level is a second number that matters just as much**, so it gets its own
+	row of pips on the back edge in its own colour, and its own place in the
+	prompt text. Two rows rather than one longer row: tier and level are not the
+	same quantity, and a single row of pips would have to be counted twice and
+	split in the middle to be read at all. Level has no colour of its own — the
+	body already means tier, and a body that meant both would mean neither.
+
+	`createOffer` builds the same machine with a single Take prompt instead of the
+	three working ones. That is what stands on the generator pad, and it is
+	deliberately the real geometry rather than a token: what you see on the pad is
+	exactly what you will be placing.
 ]]
 
 local Config = require(script.Parent.Config)
@@ -48,32 +60,47 @@ local function roofHeight(): number
 	return Config.Factory.BaseSize.Y + Config.Factory.BodySize.Y
 end
 
--- One pip per tier, in a row along the front edge of the roof and centred on
--- it, so three pips read as three whatever the machine is made of.
-local function addPips(model: Model, tier: number)
+-- One pip per unit, in a row along one edge of the roof and centred on it, so
+-- three pips read as three whatever the machine is made of. `inset` picks the
+-- edge: negative is the front (tier), positive the back (level).
+local function addPipRow(model: Model, prefix: string, count: number, color: Color3, inset: number)
 	local cfg = Config.Factory
 	local top = roofHeight()
 
-	for index = 1, tier do
-		local pip = newPart(("Pip%d"):format(index), model)
+	for index = 1, count do
+		local pip = newPart(("%s%d"):format(prefix, index), model)
 		pip.Size = cfg.PipSize
-		pip.Color = cfg.PipColor
+		pip.Color = color
 		pip.Material = Enum.Material.Neon
 		pip.CanCollide = false
 		pip.CanTouch = false
 		pip.CanQuery = false
 
-		local offset = (index - (tier + 1) / 2) * cfg.PipSpacing
-		pip.CFrame = CFrame.new(offset, top + cfg.PipSize.Y / 2, -cfg.PipInset)
+		local offset = (index - (count + 1) / 2) * cfg.PipSpacing
+		pip.CFrame = CFrame.new(offset, top + cfg.PipSize.Y / 2, inset)
 	end
 end
 
-function FactoryModel.create(tier: number): Model
+-- How a machine says what it is, on every prompt it carries. One string built in
+-- one place, so the three prompts on a machine and the one on an offer cannot
+-- describe it differently.
+function FactoryModel.describe(tier: number, level: number): string
+	return ("Tier %d · Lv %d Factory"):format(tier, level)
+end
+
+-- Everything a machine is made of except its prompts: the real geometry, shared
+-- by a placed machine and by the offer standing on the generator pad.
+--
+-- The body comes back alongside the model because it is what every prompt hangs
+-- off, and looking it up again by name would be a nil check on a part this
+-- function just created.
+local function buildMachine(tier: number, level: number): (Model, BasePart)
 	local cfg = Config.Factory
 
 	local model = Instance.new("Model")
-	model.Name = ("Tier %d Factory"):format(tier)
+	model.Name = FactoryModel.describe(tier, level)
 	model:SetAttribute(cfg.TierAttribute, tier)
+	model:SetAttribute(cfg.LevelAttribute, level)
 
 	local base = newPart("Base", model)
 	base.Size = cfg.BaseSize
@@ -87,7 +114,8 @@ function FactoryModel.create(tier: number): Model
 	body.Material = Enum.Material.WoodPlanks
 	body.CFrame = CFrame.new(0, cfg.BaseSize.Y + cfg.BodySize.Y / 2, 0)
 
-	addPips(model, tier)
+	addPipRow(model, "Pip", tier, cfg.PipColor, -cfg.PipInset)
+	addPipRow(model, "LevelPip", level, cfg.LevelPipColor, cfg.PipInset)
 
 	-- Holds whatever the machine currently contains. Invisible and
 	-- non-colliding while empty; `showItem` gives it a body and stands it on
@@ -101,7 +129,16 @@ function FactoryModel.create(tier: number): Model
 	slot.CanQuery = false
 	slot.CFrame = CFrame.new(0, roofHeight() + cfg.SlotOffset + 0.5, 0)
 
-	local objectText = ("Tier %d Factory"):format(tier)
+	model.PrimaryPart = base
+	return model, body
+end
+
+function FactoryModel.create(tier: number, level: number): Model
+	local cfg = Config.Factory
+
+	local model, body = buildMachine(tier, level)
+
+	local objectText = FactoryModel.describe(tier, level)
 
 	-- One prompt per end of the machine's cycle rather than one that rewrites
 	-- itself. FactoryService enables exactly one at a time — insert while empty,
@@ -144,8 +181,29 @@ function FactoryModel.create(tier: number): Model
 	remove.Enabled = cfg.CanRemove
 	remove.Parent = body
 
-	model.PrimaryPart = base
 	return model
+end
+
+-- The machine as it stands on the generator pad: identical geometry, one Take
+-- prompt, and none of the three working ones. Built from the same builder on
+-- purpose — an offer that only approximated the machine would be advertising
+-- something other than what it hands over.
+--
+-- The prompt is returned rather than looked up again by the caller, so the one
+-- thing an offer can do is wired to the one thing that built it.
+function FactoryModel.createOffer(tier: number, level: number): (Model, ProximityPrompt)
+	local model, body = buildMachine(tier, level)
+
+	local take = Instance.new("ProximityPrompt")
+	take.Name = "TakePrompt"
+	take.ActionText = "Take"
+	take.ObjectText = FactoryModel.describe(tier, level)
+	take.HoldDuration = 0
+	take.MaxActivationDistance = Config.FactoryRng.PromptRange
+	take.RequiresLineOfSight = false
+	take.Parent = body
+
+	return model, take
 end
 
 -- Which tier a built machine is, straight off the attribute. The client reads
@@ -154,6 +212,14 @@ end
 function FactoryModel.tierOf(model: Model): number
 	local tier = model:GetAttribute(Config.Factory.TierAttribute)
 	return if typeof(tier) == "number" then tier :: number else 1
+end
+
+-- Which level a built machine is, straight off its own attribute. Never counted
+-- off the back row of pips, which is presentation the same way the body colour
+-- is.
+function FactoryModel.levelOf(model: Model): number
+	local level = model:GetAttribute(Config.Factory.LevelAttribute)
+	return if typeof(level) == "number" then level :: number else 1
 end
 
 -- Stands a freshly built machine on `ground`, which carries the zone's rotation

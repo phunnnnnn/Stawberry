@@ -19,6 +19,13 @@
 	multiplier. A second copy would eventually advertise a price the server does
 	not charge.
 
+	**Seeds are also banded.** A species' rarity decides how often the belt deals
+	it, so a seed says which band it is in twice over: the prompt names it, and
+	anything above Common wears the band's colour as an outline. Both are read
+	from the species through the Rarity module — there is no rarity attribute,
+	because `SeedSpecies` already implies one and a second copy could disagree
+	with it.
+
 	Both forms are code-generated rather than saved models so they stay in
 	version control. Swap the bodies for mesh clones later without touching
 	callers.
@@ -26,6 +33,7 @@
 
 local Config = require(script.Parent.Config)
 local Produce = require(script.Parent.Produce)
+local Rarity = require(script.Parent.Rarity)
 
 local Seed = {}
 
@@ -54,6 +62,14 @@ local function labelFor(speciesName: string): string
 	return ("%s %s"):format(speciesName, Config.Seed.ToolName)
 end
 
+-- The belt's version of the label, with the band in front of it the way loot is
+-- named everywhere: "Mythic Watermelon Seed". Only the belt uses it — the Tool
+-- keeps the short name, because the hotbar has a slot's width to say it in and
+-- the tooltip can carry the band instead.
+local function offerFor(speciesName: string): string
+	return ("%s %s"):format(Rarity.name(Rarity.ofSpecies(speciesName)), labelFor(speciesName))
+end
+
 local function styleBody(part: BasePart, speciesName: string)
 	part.Shape = Enum.PartType.Ball
 	part.Size = Config.Seed.Size
@@ -80,11 +96,33 @@ function Seed.speciesOf(tool: Tool): string?
 	return speciesName :: string
 end
 
+-- A rarity outline on the ball, so a seed worth crossing the map for announces
+-- itself at belt distance instead of only under the prompt. A Highlight rather
+-- than a welded ring because the belt moves every seed by CFrame each frame and
+-- a Highlight follows its adornee for free. The fill is left transparent: the
+-- body colour is the *species*, and that rule is worth more than a tint.
+local function outline(part: BasePart, tier: number)
+	if tier < Config.Seed.OutlineFromRarity then
+		return
+	end
+
+	local glow = Instance.new("Highlight")
+	glow.Name = "RarityOutline"
+	glow.Adornee = part
+	glow.FillTransparency = 1
+	glow.OutlineColor = Rarity.color(tier)
+	glow.OutlineTransparency = 0
+	-- Occluded, not AlwaysOnTop: a rare seed should be visible down the belt,
+	-- not through the scenery between here and it.
+	glow.DepthMode = Enum.HighlightDepthMode.Occluded
+	glow.Parent = part
+end
+
 function Seed.createPickup(speciesName: string?): BasePart
 	local resolved = resolve(speciesName)
 
 	local part = Instance.new("Part")
-	part.Name = labelFor(resolved)
+	part.Name = offerFor(resolved)
 	part:SetAttribute(Config.Seed.SpeciesAttribute, resolved)
 	styleBody(part, resolved)
 
@@ -100,11 +138,13 @@ function Seed.createPickup(speciesName: string?): BasePart
 	-- The price is on the prompt, so what pressing E costs is visible before it
 	-- is pressed rather than only in the refusal afterwards.
 	prompt.ActionText = ("Buy — %d coins"):format(Seed.price(resolved))
-	prompt.ObjectText = labelFor(resolved)
+	prompt.ObjectText = offerFor(resolved)
 	prompt.HoldDuration = 0
 	prompt.MaxActivationDistance = Config.Seed.PickupRange
 	prompt.RequiresLineOfSight = false
 	prompt.Parent = part
+
+	outline(part, Rarity.ofSpecies(resolved))
 
 	return part
 end
@@ -114,7 +154,8 @@ function Seed.createTool(speciesName: string?): Tool
 
 	local tool = Instance.new("Tool")
 	tool.Name = labelFor(resolved)
-	tool.ToolTip = ("Click the farm to plant a %s"):format(resolved)
+	tool.ToolTip = ("%s — click the farm to plant a %s")
+		:format(Rarity.name(Rarity.ofSpecies(resolved)), resolved)
 	tool.RequiresHandle = true
 	tool.CanBeDropped = false
 	tool:SetAttribute(Config.Seed.SpeciesAttribute, resolved)

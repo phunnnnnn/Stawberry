@@ -27,13 +27,27 @@
 	to is asked of `Produce.acceptedBy` rather than worked out here — so a machine
 	and a worker cannot disagree about where something goes.
 
-	A third prompt on its own key takes an empty machine back into stock. It is
-	currently switched off by `Config.Factory.CanRemove`, so a placed factory
-	stays put; the handler is left wired so the flag is the only thing to change.
+	**Machines also have a level, and level is what a machine is worth.** Tier
+	decides *what* it eats; level multiplies the value of what it makes. The two
+	are independent — a level-4 tier-1 and a level-1 tier-4 are both real machines
+	and neither is the other's upgrade — so both are carried on the Tool, both are
+	written to the placed model, and both are read back off attributes rather than
+	inferred. `Produce.gradeAfter` turns the level into the output's grade, and
+	because a product is priced off its input, a levelled chain compounds.
 
-	The unplaced stock is a count on a single Tool *per tier* rather than one Tool
-	per factory, which is the same shape as a produce stack: it survives a respawn
-	replacing the Backpack, because it is rebuilt from a server-side number.
+	A third prompt on its own key takes an empty machine back into stock. It is on
+	now: machines come off a generator whose own level rises, so a player has to
+	be able to replace an early bad one or their first six cells would be the
+	whole game.
+
+	**One Tool is exactly one placeable machine** — the same shape produce has,
+	and no longer the stacked count-per-tier this replaced. Two level-2 tier-3s
+	are two Tools. The authoritative list still lives here and the Tools mirror
+	it, because the Backpack is replaced on respawn and rebuilding from a
+	server-side list is what stops death from wiping the pile.
+
+	Nothing here decides what a player *gets* — `FactoryRngService` calls
+	`grantFactory`, and `Config.Factory.StartingFactories` is empty.
 ]]
 
 local Players = game:GetService("Players")
@@ -54,6 +68,10 @@ type FactoryRecord = {
 	-- Which rung of the ladder this machine runs. Fixed at placement, from the
 	-- Tool that placed it.
 	tier: number,
+	-- How well it runs that rung: the multiplier it puts on what it makes. Fixed
+	-- at placement from the same Tool, and never changes — there is no upgrade
+	-- path for a placed machine, only picking it up and placing a better one.
+	level: number,
 	inputPrompt: ProximityPrompt,
 	outputPrompt: ProximityPrompt,
 	-- Exactly one of these is set at a time, or neither when the machine is
@@ -70,22 +88,31 @@ local factoryFolder: Folder? = nil
 local records: { FactoryRecord } = {}
 local lastPlaceAt: { [Player]: number } = {}
 
--- Unplaced factories, per tier. Authoritative; the Tools only mirror it.
-local stock: { [Player]: { [number]: number } } = {}
-
-local STOCK_ATTRIBUTE = "FactoryCount"
+-- Unplaced factories, one entry per machine. Authoritative; the Tools only
+-- mirror it. A list rather than a count table because a machine is now a pair —
+-- two entries with the same tier and different levels are two different things
+-- and must not collapse into one number.
+local unplaced: { [Player]: { Config.FactoryOffer } } = {}
 
 local maxTier = #Config.Tiers
+local maxLevel = Config.Factory.MaxLevel
 
-local function stockTable(player: Player): { [number]: number }
-	local existing = stock[player]
+local function unplacedList(player: Player): { Config.FactoryOffer }
+	local existing = unplaced[player]
 	if existing then
 		return existing
 	end
 
-	local created: { [number]: number } = {}
-	stock[player] = created
+	local created: { Config.FactoryOffer } = {}
+	unplaced[player] = created
 	return created
+end
+
+-- One string per distinct machine, so Tools can be reconciled against the list
+-- by identity rather than by position. Tier and level together *are* the
+-- identity: nothing else about an unplaced machine varies.
+local function offerKey(tier: number, level: number): string
+	return ("%d:%d"):format(tier, level)
 end
 
 -- Placement, inserting and collecting all refuse by simply returning, which
@@ -118,28 +145,31 @@ local function containers(player: Player): { Instance }
 	return found
 end
 
-local function toolNameFor(tier: number): string
-	return ("Tier %d %s"):format(tier, Config.Factory.ToolName)
-end
-
--- The tier a Tool places, or nil if it is not a factory Tool at all. This is
--- the one test for "is this a factory" — the name is a label, the attribute is
--- the contract, exactly as with a seed.
-local function tierOfTool(tool: Tool): number?
+-- Which machine a Tool places, or nil if it is not a factory Tool at all. This
+-- is the one test for "is this a factory" — the name is a label, the attributes
+-- are the contract, exactly as with a seed.
+--
+-- Both numbers must be present. A Tool carrying only a tier is one left over
+-- from before levels existed, and reading it as level 1 would quietly hand a
+-- player a machine the generator never dealt them.
+local function offerOfTool(tool: Tool): Config.FactoryOffer?
 	local tier = tool:GetAttribute(Config.Factory.TierAttribute)
-	if typeof(tier) ~= "number" then
+	local level = tool:GetAttribute(Config.Factory.LevelAttribute)
+	if typeof(tier) ~= "number" or typeof(level) ~= "number" then
 		return nil
 	end
-	return tier :: number
+	return { Tier = tier :: number, Level = level :: number }
 end
 
-local function createFactoryTool(tier: number): Tool
+local function createFactoryTool(offer: Config.FactoryOffer): Tool
 	local tool = Instance.new("Tool")
-	tool.Name = toolNameFor(tier)
-	tool.ToolTip = "Click the factory zone to place"
+	tool.Name = FactoryModel.describe(offer.Tier, offer.Level)
+	tool.ToolTip = ("Click the factory zone to place. Level %d — everything it makes is worth ×%s.")
+		:format(offer.Level, ("%g"):format(Produce.levelMultiplier(offer.Level)))
 	tool.RequiresHandle = true
 	tool.CanBeDropped = false
-	tool:SetAttribute(Config.Factory.TierAttribute, tier)
+	tool:SetAttribute(Config.Factory.TierAttribute, offer.Tier)
+	tool:SetAttribute(Config.Factory.LevelAttribute, offer.Level)
 
 	-- Must be named "Handle" for RequiresHandle to find it. Coloured like the
 	-- machine it places, so the thing in your hand matches the thing that
@@ -147,7 +177,7 @@ local function createFactoryTool(tier: number): Tool
 	local handle = Instance.new("Part")
 	handle.Name = "Handle"
 	handle.Size = Vector3.new(1.6, 1.6, 1.6)
-	handle.Color = Config.Factory.TierColors[tier] or Config.Factory.BodyColor
+	handle.Color = Config.Factory.TierColors[offer.Tier] or Config.Factory.BodyColor
 	handle.Material = Enum.Material.WoodPlanks
 	handle.Massless = true
 	handle.CanCollide = false
@@ -157,25 +187,32 @@ local function createFactoryTool(tier: number): Tool
 	return tool
 end
 
--- Keeps exactly one factory Tool per tier that has stock left, each carrying
--- that tier's whole remaining count. Same reconciliation as a produce stack —
--- both directions, safe to call repeatedly, and again after a respawn has
--- replaced the Backpack.
+-- Brings the Tools in line with the unplaced list: exactly one Tool per machine,
+-- no stacking. Same reconciliation as a produce stack — both directions, safe to
+-- call repeatedly, and again after a respawn has replaced the Backpack.
 --
--- Tools are matched by their tier attribute rather than by name, so a stale
--- Tool from an earlier naming scheme is still recognised and cleaned up instead
--- of lingering beside a new one.
+-- Tools are matched by their tier *and level* attributes rather than by name, so
+-- a Tool left over from the stacked scheme — which had no level on it — is
+-- recognised as not matching anything and cleaned up, instead of lingering
+-- beside the new ones claiming to be a machine the player does not own.
 local function syncFactoryTools(player: Player)
-	local counts = stockTable(player)
-	local kept: { [number]: Tool } = {}
+	local wanted: { [string]: number } = {}
+	for _, offer in ipairs(unplacedList(player)) do
+		local key = offerKey(offer.Tier, offer.Level)
+		wanted[key] = (wanted[key] or 0) + 1
+	end
 
+	-- Count down as Tools are kept, so the survivors are exactly as many as the
+	-- list says and every extra is destroyed.
 	for _, container in ipairs(containers(player)) do
 		for _, child in ipairs(container:GetChildren()) do
 			if child:IsA("Tool") then
-				local tier = tierOfTool(child)
-				if tier then
-					if (counts[tier] or 0) > 0 and not kept[tier] then
-						kept[tier] = child
+				local offer = offerOfTool(child)
+				if offer then
+					local key = offerKey(offer.Tier, offer.Level)
+					local remaining = wanted[key] or 0
+					if remaining > 0 then
+						wanted[key] = remaining - 1
 					else
 						child:Destroy()
 					end
@@ -184,25 +221,63 @@ local function syncFactoryTools(player: Player)
 		end
 	end
 
-	for tier = 1, maxTier do
-		local count = counts[tier] or 0
-		if count > 0 then
-			local tool = kept[tier]
-			if not tool then
-				local backpack = player:FindFirstChildOfClass("Backpack")
-				if not backpack then
-					return
-				end
-				local created = createFactoryTool(tier)
-				created.Parent = backpack
-				tool = created
-			end
+	local backpack = player:FindFirstChildOfClass("Backpack")
+	if not backpack then
+		return
+	end
 
-			tool.ToolTip = ("Click the factory zone to place a tier %d factory (%d left)")
-				:format(tier, count)
-			tool:SetAttribute(STOCK_ATTRIBUTE, count)
+	-- Whatever the pass above did not account for is missing, and is built from
+	-- the list rather than from the Tool it is replacing.
+	for _, offer in ipairs(unplacedList(player)) do
+		local key = offerKey(offer.Tier, offer.Level)
+		local missing = wanted[key] or 0
+		if missing > 0 then
+			wanted[key] = missing - 1
+			createFactoryTool(offer).Parent = backpack
 		end
 	end
+end
+
+-- Unplaced machines the player is holding, of any tier or level. This is what
+-- Config.Factory.MaxCarried caps, and what the generator checks before handing
+-- another one over.
+function FactoryService.carriedCount(player: Player): number
+	return #unplacedList(player)
+end
+
+-- Hands a machine over, free. The generator's commit — and the only way into the
+-- unplaced list other than picking a placed machine back up.
+--
+-- Refuses at MaxCarried rather than silently dropping it, so the caller can
+-- leave the offer standing on the pad instead of destroying something the player
+-- never received. Same contract as InventoryService.addItem.
+function FactoryService.grantFactory(player: Player, tier: number, level: number): boolean
+	if tier < 1 or tier > maxTier or level < 1 or level > maxLevel then
+		warn(("[FactoryService] refusing a tier %d level %d factory — the ladder goes to %d and levels to %d.")
+			:format(tier, level, maxTier, maxLevel))
+		return false
+	end
+
+	if FactoryService.carriedCount(player) >= Config.Factory.MaxCarried then
+		return false
+	end
+
+	table.insert(unplacedList(player), { Tier = tier, Level = level })
+	syncFactoryTools(player)
+	return true
+end
+
+-- Drops the first unplaced machine matching `tier`/`level`, or false when the
+-- player has none. All-or-nothing, so placement cannot consume half a machine.
+local function takeUnplaced(player: Player, tier: number, level: number): boolean
+	local list = unplacedList(player)
+	for index, offer in ipairs(list) do
+		if offer.Tier == tier and offer.Level == level then
+			table.remove(list, index)
+			return true
+		end
+	end
+	return false
 end
 
 local function placedCount(player: Player): number
@@ -232,9 +307,17 @@ local function chooseInput(player: Player, tier: number): string?
 		return held
 	end
 
-	for _, source in ipairs(Produce.sourcesForTier(tier)) do
-		if InventoryService.itemCount(player, source) > 0 then
-			return source
+	-- Scanned out of what the player actually holds rather than down
+	-- Produce.sourcesForTier, which lists *base* names only. A Pie out of a
+	-- levelled machine is "Strawberry Pie#3" and a base-name check would walk
+	-- straight past it — the machine would sit there claiming to have nothing to
+	-- eat while the player stood in front of it holding three.
+	--
+	-- InventoryService.itemIds is sorted, so which one a machine reaches for with
+	-- nothing equipped is the same every run.
+	for _, itemId in ipairs(InventoryService.itemIds(player)) do
+		if Produce.acceptedBy(itemId) == tier then
+			return itemId
 		end
 	end
 	return nil
@@ -250,9 +333,11 @@ end
 local function refreshPrompts(record: FactoryRecord)
 	local product = record.output
 	if product then
-		-- Done: the only thing left to do is take the product out.
+		-- Done: the only thing left to do is take the product out. Named for
+		-- display, so a levelled machine's prompt reads "Collect Strawberry Pie ×3"
+		-- rather than showing the raw id.
 		record.inputPrompt.Enabled = false
-		record.outputPrompt.ActionText = ("Collect %s"):format(product)
+		record.outputPrompt.ActionText = ("Collect %s"):format(Produce.displayName(product))
 		record.outputPrompt.Enabled = true
 		return
 	end
@@ -270,7 +355,7 @@ local function refreshPrompts(record: FactoryRecord)
 	-- does not have.
 	local candidate = chooseInput(record.owner, record.tier)
 	record.inputPrompt.ActionText = if candidate
-		then ("Insert %s"):format(candidate)
+		then ("Insert %s"):format(Produce.displayName(candidate))
 		else ("Insert tier %d input"):format(record.tier)
 	record.inputPrompt.Enabled = true
 	record.outputPrompt.Enabled = false
@@ -291,6 +376,15 @@ end
 -- both come through here, so a cycle cannot be started two different ways and the
 -- finish timer can only ever be armed once per load.
 local function beginCycle(record: FactoryRecord, source: string, recipe: Config.ProductSpec)
+	-- **Where a machine's level becomes money.** Settled here, at the moment the
+	-- input is eaten, rather than at collection: the machine could in principle be
+	-- picked up and replaced by a different one while the timer runs, and what
+	-- comes out must be what the machine that started the cycle promised.
+	--
+	-- The input's own grade goes in, so a chain of levelled machines compounds
+	-- without anything having to walk back down it.
+	local product = Produce.idFor(recipe.Name, Produce.gradeAfter(Produce.gradeOf(source), record.level))
+
 	record.input = source
 	FactoryModel.showItem(record.model, source)
 	refreshPrompts(record)
@@ -303,11 +397,12 @@ local function beginCycle(record: FactoryRecord, source: string, recipe: Config.
 		end
 
 		record.input = nil
-		record.output = recipe.Name
-		FactoryModel.showItem(record.model, recipe.Name)
+		record.output = product
+		FactoryModel.showItem(record.model, product)
 		refreshPrompts(record)
 
-		log("a factory at %s finished a %s", tostring(record.cell), recipe.Name)
+		log("a factory at %s finished a %s worth %d coins",
+			tostring(record.cell), Produce.displayName(product), Produce.price(product))
 	end)
 end
 
@@ -357,8 +452,9 @@ local function insert(record: FactoryRecord, player: Player)
 
 	beginCycle(record, source, recipe)
 
-	log("%s inserted %s into the tier %d factory at %s (%.1fs -> %s)",
-		player.Name, source, record.tier, tostring(record.cell), recipe.ProcessTime, recipe.Name)
+	log("%s inserted %s into the tier %d level %d factory at %s (%.1fs -> %s)",
+		player.Name, Produce.displayName(source), record.tier, record.level,
+		tostring(record.cell), recipe.ProcessTime, recipe.Name)
 end
 
 local function collect(record: FactoryRecord, player: Player, product: string)
@@ -367,13 +463,14 @@ local function collect(record: FactoryRecord, player: Player, product: string)
 	-- the player spent a fruit and three seconds on.
 	if InventoryService.addItem(player, product, 1) < 1 then
 		refuse(player, "backpack is full — the %s stays in the factory at %s",
-			product, tostring(record.cell))
+			Produce.displayName(product), tostring(record.cell))
 		return
 	end
 
 	endCycle(record)
 
-	log("%s collected a %s worth %d coins", player.Name, product, Produce.price(product))
+	log("%s collected a %s worth %d coins",
+		player.Name, Produce.displayName(product), Produce.price(product))
 end
 
 -- The player placed this machine, so it is theirs. Plants have no such check,
@@ -458,12 +555,18 @@ local function onRemove(record: FactoryRecord, player: Player)
 	end
 
 	record.model:Destroy()
-	local counts = stockTable(player)
-	counts[record.tier] = (counts[record.tier] or 0) + 1
+
+	-- Straight back onto the list rather than through grantFactory: picking a
+	-- machine up must never be refused for want of carrying room, or the machine
+	-- would be destroyed and the cell freed with nothing to show for it. Placing
+	-- it took a slot in the first place, so this cannot overshoot MaxCarried by
+	-- more than the machines already standing on the pad.
+	table.insert(unplacedList(player), { Tier = record.tier, Level = record.level })
 	syncFactoryTools(player)
 
-	log("%s picked up the tier %d factory at %s (%d of that tier left)",
-		player.Name, record.tier, tostring(record.cell), counts[record.tier] or 0)
+	log("%s picked up the tier %d level %d factory at %s (carrying %d)",
+		player.Name, record.tier, record.level, tostring(record.cell),
+		FactoryService.carriedCount(player))
 end
 
 --[[ Placement ]]
@@ -502,22 +605,25 @@ local function onPlaceRequest(player: Player, requested: unknown)
 		return
 	end
 
-	-- Which tier gets placed is the Tool's to say, not the client's — the same
-	-- rule that decides which species a seed plants.
+	-- Which tier *and level* gets placed is the Tool's to say, not the client's —
+	-- the same rule that decides which species a seed plants. Sending the level
+	-- from the client would be a way to place a level-4 machine having picked up
+	-- a level-1.
 	local held = character:FindFirstChildOfClass("Tool")
-	local tier = if held then tierOfTool(held) else nil
-	if not tier then
+	local offer = if held then offerOfTool(held) else nil
+	if not offer then
 		refuse(player, "no factory Tool equipped — one must be held, not just carried")
 		return
 	end
 
+	local tier, level = offer.Tier, offer.Level
 	if tier < 1 or tier > maxTier then
 		refuse(player, "the held factory claims tier %d, and the ladder only goes to %d", tier, maxTier)
 		return
 	end
 
-	if (stockTable(player)[tier] or 0) <= 0 then
-		refuse(player, "has no tier %d factories left to place", tier)
+	if level < 1 or level > maxLevel then
+		refuse(player, "the held factory claims level %d, and levels only go to %d", level, maxLevel)
 		return
 	end
 
@@ -544,13 +650,19 @@ local function onPlaceRequest(player: Player, requested: unknown)
 		return
 	end
 
-	-- Consume stock only once every check has passed.
+	-- Consume stock only once every check has passed. The Tools mirror the list,
+	-- so holding one normally proves it is there — this is the gate for the case
+	-- where they have drifted apart, and it consumes and checks in one step so
+	-- they cannot drift here.
+	if not takeUnplaced(player, tier, level) then
+		refuse(player, "has no tier %d level %d factory to place", tier, level)
+		syncFactoryTools(player)
+		return
+	end
 	lastPlaceAt[player] = now
-	local counts = stockTable(player)
-	counts[tier] = (counts[tier] or 0) - 1
 	syncFactoryTools(player)
 
-	local model = FactoryModel.create(tier)
+	local model = FactoryModel.create(tier, level)
 	FactoryModel.place(model, CFrame.new(cell) * FactoryGrid.orientation(pad))
 	model:SetAttribute("OwnerUserId", player.UserId)
 	model.Parent = factoryFolder
@@ -567,7 +679,7 @@ local function onPlaceRequest(player: Player, requested: unknown)
 		-- leaving an inert box standing on a cell nobody can reclaim.
 		warn("[FactoryService] built a factory without all three prompts — discarding it.")
 		model:Destroy()
-		counts[tier] = (counts[tier] or 0) + 1
+		table.insert(unplacedList(player), { Tier = tier, Level = level })
 		syncFactoryTools(player)
 		return
 	end
@@ -577,6 +689,7 @@ local function onPlaceRequest(player: Player, requested: unknown)
 		owner = player,
 		cell = cell,
 		tier = tier,
+		level = level,
 		inputPrompt = inputPrompt :: ProximityPrompt,
 		outputPrompt = outputPrompt :: ProximityPrompt,
 		input = nil,
@@ -595,13 +708,15 @@ local function onPlaceRequest(player: Player, requested: unknown)
 	end)
 	refreshPrompts(record)
 
-	log("%s placed a tier %d factory at %s under %s (%d placed, %d of that tier left)",
+	log("%s placed a tier %d level %d factory (×%s output) at %s under %s (%d placed, %d still carried)",
 		player.Name,
 		tier,
+		level,
+		("%g"):format(Produce.levelMultiplier(level)),
 		tostring(cell),
 		if model.Parent then model.Parent:GetFullName() else "NOTHING — the model is not in the world",
 		placedCount(player),
-		counts[tier] or 0)
+		FactoryService.carriedCount(player))
 end
 
 --[[ Worker-facing view of the factory zone
@@ -785,7 +900,7 @@ local function removePlayer(player: Player)
 	end
 
 	lastPlaceAt[player] = nil
-	stock[player] = nil
+	unplaced[player] = nil
 end
 
 function FactoryService.start()
@@ -810,17 +925,18 @@ function FactoryService.start()
 	Remotes.event(Remotes.PLACE_FACTORY).OnServerEvent:Connect(onPlaceRequest)
 
 	local function setupPlayer(player: Player)
-		-- Copied rather than referenced: StartingStock is shared config, and
-		-- handing every player the same table would make one player's placement
-		-- spend everybody's stock.
-		local counts = stockTable(player)
-		for tier = 1, maxTier do
-			counts[tier] = Config.Factory.StartingStock[tier] or 0
+		-- Copied entry by entry rather than referenced: StartingFactories is shared
+		-- config, and handing every player the same tables would make one player's
+		-- placement spend everybody's stock. Empty by default — machines come off
+		-- the generator now.
+		local list = unplacedList(player)
+		for _, offer in ipairs(Config.Factory.StartingFactories) do
+			table.insert(list, { Tier = offer.Tier, Level = offer.Level })
 		end
 
 		player.CharacterAdded:Connect(function()
 			-- Respawning replaces the Backpack, taking the factory Tools with
-			-- it. Rebuild them from the stock counts once the new one arrives.
+			-- it. Rebuild them from the unplaced list once the new one arrives.
 			task.defer(function()
 				player:WaitForChild("Backpack", 10)
 				syncFactoryTools(player)
@@ -856,6 +972,11 @@ function FactoryService.start()
 		table.insert(counts, ("T%d:%d"):format(tier, #Produce.sourcesForTier(tier)))
 	end
 
+	local multipliers: { string } = {}
+	for level = 1, maxLevel do
+		table.insert(multipliers, ("%g"):format(Produce.levelMultiplier(level)))
+	end
+
 	print(("[FactoryService] Ready on Workspace.%s — %d stud grid, %d tiers, %d recipe(s) (%s).")
 		:format(
 			Config.Factory.ZoneName,
@@ -863,6 +984,18 @@ function FactoryService.start()
 			maxTier,
 			#Produce.sources(),
 			table.concat(counts, " ")
+		))
+
+	-- The level curve, spelled out for the same reason the belt prints its rarity
+	-- spread: it is the one number a machine's whole worth hangs off, and a config
+	-- edit is otherwise only visible by selling something.
+	print(("[FactoryService] %d levels, output ×{%s}; pick-up is %s, carrying up to %d, placing up to %d.")
+		:format(
+			maxLevel,
+			table.concat(multipliers, ", "),
+			if Config.Factory.CanRemove then "on" else "OFF",
+			Config.Factory.MaxCarried,
+			Config.Factory.MaxPlaced
 		))
 end
 

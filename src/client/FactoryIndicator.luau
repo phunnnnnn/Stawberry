@@ -12,9 +12,10 @@
 	the same MouseTarget helper FactoryController fires with, so a green square
 	means that click really will place there.
 
-	The square also names the tier it is about to place, which matters more than
-	it sounds: there is one Tool per tier, and while Config.Factory.CanRemove is
-	off a machine on the wrong rung is permanent.
+	The square also names the tier *and level* it is about to place, which matters
+	more than it sounds: the hotbar can hold several machines that differ only by
+	level, they look alike from above, and level is the whole of what a machine is
+	worth. Putting the wrong one down costs a cell and a pick-up.
 
 	Two rules are not previewed, because the client has no way to read either:
 	the server's MaxPlaced cap and the remaining unplaced stock.
@@ -111,12 +112,12 @@ local function factoryZone(): BasePart?
 	return nil
 end
 
--- The equipped factory Tool and the tier it places, or nil for neither.
+-- The equipped factory Tool and the machine it places, or nil for neither.
 --
--- Matched on the attribute rather than the name, the same check FactoryService
--- makes: there is one Tool per tier, so a name check would preview tier 1 and
--- silently draw nothing for the other four.
-local function heldFactory(): (Tool?, number?)
+-- Matched on the attributes rather than the name, the same check FactoryService
+-- makes: a name is a label, and both numbers have to come from the same place
+-- the server will read them from or the preview can promise the wrong machine.
+local function heldFactory(): (Tool?, number?, number?)
 	local character = player.Character
 	if not character then
 		return nil, nil
@@ -124,14 +125,15 @@ local function heldFactory(): (Tool?, number?)
 
 	local tool = character:FindFirstChildOfClass("Tool")
 	if not tool then
-		return nil, nil
+		return nil, nil, nil
 	end
 
 	local tier = tool:GetAttribute(Config.Factory.TierAttribute)
-	if typeof(tier) ~= "number" then
-		return nil, nil
+	local level = tool:GetAttribute(Config.Factory.LevelAttribute)
+	if typeof(tier) ~= "number" or typeof(level) ~= "number" then
+		return nil, nil, nil
 	end
-	return tool, tier :: number
+	return tool, tier :: number, level :: number
 end
 
 local function rebuildOccupied()
@@ -194,8 +196,8 @@ local function update()
 	end
 
 	local pad = factoryZone()
-	local _, tier = heldFactory()
-	if not (pad and tier) then
+	local _, tier, level = heldFactory()
+	if not (pad and tier and level) then
 		setShown(parts.container, false)
 		return
 	end
@@ -218,13 +220,13 @@ local function update()
 		* FactoryGrid.orientation(pad)
 	parts.marker.Color = colour
 
-	-- Names the tier when the cell is free, rather than going blank. Five tiers
-	-- means five identical green squares otherwise, and placing a machine is
-	-- permanent while Config.Factory.CanRemove is off — so "which one is this"
-	-- is worth answering before the click, not after.
+	-- Names the machine when the cell is free, rather than going blank. Every
+	-- square looks alike otherwise, and a hotbar full of machines that differ only
+	-- by level makes "which one is this" worth answering before the click rather
+	-- than after.
 	local reason = parts.reason
 	if reason then
-		reason.Text = blocked or ("Tier %d"):format(tier)
+		reason.Text = blocked or ("Tier %d · Lv %d"):format(tier, level)
 		reason.TextColor3 = colour
 	end
 

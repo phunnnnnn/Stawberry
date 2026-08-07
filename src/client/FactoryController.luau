@@ -9,9 +9,9 @@
 	would redo it anyway, and a client that snapped differently would just make
 	the two disagree.
 
-	Which *tier* is placed is not sent either. The server reads it off the Tool it
-	can see the player holding, the same way PlantingController leaves the species
-	to the seed.
+	Which *tier and level* are placed is not sent either. The server reads both off
+	the Tool it can see the player holding, the same way PlantingController leaves
+	the species to the seed.
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -25,8 +25,9 @@ local ToolWatcher = require(script.Parent.ToolWatcher)
 local FactoryController = {}
 
 function FactoryController.start()
-	-- Bound to the attribute, not the name: there is one Tool per tier and they
-	-- all place when clicked.
+	-- Bound to the attribute, not the name: one Tool is one machine, so a
+	-- player can carry several that differ only by level, and they all place when
+	-- clicked.
 	ToolWatcher.onActivatedAttribute(Config.Factory.TierAttribute, function(tool: Tool)
 		local hit = MouseTarget.raycast()
 		if not hit then

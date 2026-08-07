@@ -236,17 +236,17 @@ local function describe(worker: WorkerRecord): string
 	local job = worker.job
 	if job then
 		if job.kind == "Harvest" then
-			return ("Fetching %s"):format(if job.fruit then job.fruit.itemName else "fruit")
+			return ("Fetching %s"):format(if job.fruit then Produce.displayName(job.fruit.itemName) else "fruit")
 		elseif job.kind == "Insert" then
-			return ("Loading %s"):format(worker.carrying or "fruit")
+			return ("Loading %s"):format(if worker.carrying then Produce.displayName(worker.carrying) else "fruit")
 		elseif job.kind == "Collect" then
 			return "Collecting"
 		end
-		return ("Selling %s"):format(worker.carrying or "produce")
+		return ("Selling %s"):format(if worker.carrying then Produce.displayName(worker.carrying) else "produce")
 	end
 
 	if worker.carrying then
-		return ("Holding %s"):format(worker.carrying)
+		return ("Holding %s"):format(Produce.displayName(worker.carrying))
 	end
 	return "Idle"
 end
@@ -498,7 +498,7 @@ local function finish(worker: WorkerRecord, job: Job, now: number)
 		if machine and carrying and FactoryService.insertItem(machine, carrying) then
 			release(worker)
 			log("%s's worker loaded a %s into the factory at %s",
-				owner.Name, carrying, tostring(machine.position))
+				owner.Name, Produce.displayName(carrying), tostring(machine.position))
 		end
 		return
 	end
@@ -508,7 +508,8 @@ local function finish(worker: WorkerRecord, job: Job, now: number)
 		local product = if machine then FactoryService.collectProduct(machine) else nil
 		if product then
 			take(worker, product, now)
-			log("%s's worker collected a %s", owner.Name, product)
+			log("%s's worker collected a %s worth %d coins",
+				owner.Name, Produce.displayName(product), Produce.price(product))
 		end
 		return
 	end
@@ -789,7 +790,8 @@ function onDismissPrompt(worker: WorkerRecord, player: Player)
 	-- destroy it with no record anywhere. Same shape as the factory refusing to be
 	-- picked up mid-cycle: the player collects first.
 	if worker.carrying then
-		refuse(player, "that worker is carrying a %s — let it deliver that first", worker.carrying)
+		refuse(player, "that worker is carrying a %s — let it deliver that first",
+			Produce.displayName(worker.carrying))
 		return
 	end
 

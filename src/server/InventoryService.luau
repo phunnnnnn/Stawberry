@@ -30,6 +30,15 @@
 	are kept as-is on purpose: client modules read them, and renaming a wire
 	contract to gain the word "item" would buy nothing.
 
+	**What the tally is keyed by is an item *id*, not a bare name.** Factories
+	have levels, so two Strawberry Pies can be worth different amounts, and the
+	dearer one is a different thing to hold: `Produce` encodes that as a grade
+	suffix on the id. Nothing here has to know that — an id is a string, it keys
+	the tally, it goes on the `FruitName` attribute, and every price question goes
+	through `Produce.price` rather than reading `spec.SellPrice` directly. That
+	last part is the rule to keep: `spec.SellPrice` is the *base* price and would
+	silently sell a levelled product for what an unlevelled one is worth.
+
 	No persistence: everything resets when the server shuts down.
 ]]
 
@@ -118,18 +127,23 @@ local function containers(player: Player): { Instance }
 	return found
 end
 
-local function createStackTool(itemName: string): Tool?
-	local spec = Produce.spec(itemName)
+local function createStackTool(itemId: string): Tool?
+	local spec = Produce.spec(itemId)
 	if not spec then
 		return nil
 	end
 
+	-- The name is a label and the attribute is the contract, the same split seeds
+	-- and factories use. So the hotbar shows "Strawberry Pie ×3" while the id that
+	-- keys the tally rides on the attribute, unmangled.
+	local display = Produce.displayName(itemId)
+
 	local tool = Instance.new("Tool")
-	tool.Name = itemName
-	tool.ToolTip = ("%s — %d coins"):format(itemName, spec.SellPrice)
+	tool.Name = display
+	tool.ToolTip = ("%s — %d coins"):format(display, Produce.price(itemId))
 	tool.RequiresHandle = true
 	tool.CanBeDropped = false
-	tool:SetAttribute(FRUIT_ATTRIBUTE, itemName)
+	tool:SetAttribute(FRUIT_ATTRIBUTE, itemId)
 
 	local handle = Instance.new("Part")
 	handle.Name = "Handle"
@@ -325,6 +339,22 @@ function InventoryService.itemCount(player: Player, itemName: string): number
 	return itemTable(player)[itemName] or 0
 end
 
+-- Every distinct item the player is carrying, in a fixed order.
+--
+-- Sorted rather than handed back in `pairs` order, which is not stable: a
+-- factory picking "the first thing I will accept" out of this must pick the same
+-- one every run, or the same inventory loads a different machine each time.
+function InventoryService.itemIds(player: Player): { string }
+	local found: { string } = {}
+	for itemId, count in pairs(itemTable(player)) do
+		if count > 0 then
+			table.insert(found, itemId)
+		end
+	end
+	table.sort(found)
+	return found
+end
+
 -- Every piece of produce carried, of any kind. This is what MaxProduce caps.
 function InventoryService.produceCount(player: Player): number
 	return totalItems(player)
@@ -424,15 +454,18 @@ function InventoryService.sellHeldItem(player: Player): SaleResult
 		return { sold = 0, earned = 0, reason = "Hold something in your hand first." }
 	end
 
-	local spec = Produce.spec(itemName)
-	if not (spec and InventoryService.takeItem(player, itemName, 1)) then
+	-- Priced through Produce rather than off spec.SellPrice, which is the *base*
+	-- price and would pay a Masterpiece out of a level-4 machine exactly what one
+	-- out of a level-1 is worth.
+	local price = Produce.price(itemName)
+	if not (Produce.spec(itemName) and InventoryService.takeItem(player, itemName, 1)) then
 		syncItemTools(player, itemName)
 		return { sold = 0, earned = 0, reason = "That is not in your inventory." }
 	end
 
-	InventoryService.addCoins(player, spec.SellPrice)
+	InventoryService.addCoins(player, price)
 
-	return { sold = 1, earned = spec.SellPrice, itemName = itemName }
+	return { sold = 1, earned = price, itemName = Produce.displayName(itemName) }
 end
 
 function InventoryService.start()

@@ -83,7 +83,8 @@ function SellService.sellCarried(player: Player, itemName: string): number
 	local earned = Produce.price(itemName)
 	if earned <= 0 then
 		if Config.Seller.LogSales then
-			warn(("[SellService] refused a worker's %s — nothing prices it."):format(itemName))
+			warn(("[SellService] refused a worker's %s — nothing prices it.")
+				:format(Produce.displayName(itemName)))
 		end
 		return 0
 	end
@@ -91,7 +92,8 @@ function SellService.sellCarried(player: Player, itemName: string): number
 	InventoryService.addCoins(player, earned)
 
 	if Config.Seller.LogSales then
-		print(("[SellService] %s's worker sold a %s for %d coins."):format(player.Name, itemName, earned))
+		print(("[SellService] %s's worker sold a %s for %d coins.")
+			:format(player.Name, Produce.displayName(itemName), earned))
 	end
 	return earned
 end

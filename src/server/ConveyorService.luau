@@ -5,10 +5,15 @@
 	of it to the other end, and sells them to players through a proximity
 	prompt.
 
-	The belt is the shop. Each seed is rolled from Config.SpeciesOrder, so all
-	eighteen species come past in one queue, and each carries its own price —
-	so what arrives next is luck and what you take is a decision. A seed nobody
-	can afford simply rides off the end.
+	The belt is the shop. Each seed is rolled from the catalogue, so all eighteen
+	species come past in one queue, and each carries its own price — so what
+	arrives next is luck and what you take is a decision. A seed nobody can
+	afford simply rides off the end.
+
+	The roll is **weighted by rarity**, not uniform: a Common comes past several
+	times for every Mythic, which is what makes the top of the catalogue worth
+	waiting at the belt for rather than just expensive. The odds live in the
+	Rarity module beside the bands themselves; nothing here knows them.
 
 	One lane, down the centreline: the stream is a single file rather than a
 	scatter, so the seed under the prompt is unambiguous and the one behind it
@@ -22,6 +27,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
 local Config = require(ReplicatedStorage.Shared.Config)
+local Rarity = require(ReplicatedStorage.Shared.Rarity)
 local Seed = require(ReplicatedStorage.Shared.Seed)
 
 local InventoryService = require(script.Parent.InventoryService)
@@ -91,18 +97,10 @@ local function collect(player: Player, record: SeedRecord)
 	end
 end
 
--- What comes past next. Uniform across the catalogue: the belt is chance, and
--- price is the only thing gating a species.
-local function rollSpecies(): string
-	local order = Config.SpeciesOrder
-	if #order == 0 then
-		return Config.DefaultSpecies
-	end
-	return order[math.random(#order)]
-end
-
 local function spawnSeed()
-	local species = rollSpecies()
+	-- Weighted by band, so scarcity is a second gate on a species alongside its
+	-- price. Rarity owns the odds; asking it is the whole of the decision.
+	local species = Rarity.roll()
 	local part = Seed.createPickup(species)
 
 	local record: SeedRecord = {
@@ -221,6 +219,22 @@ function ConveyorService.start()
 				#Config.SpeciesOrder
 			)
 	)
+
+	-- The odds, spelled out. Six weights against a per-band species count is not
+	-- worth working out by hand when the belt can simply state what it deals —
+	-- and it is the only way to see that a weight edit did what was intended.
+	local spread: { string } = {}
+	for tier = 0, Rarity.MAX do
+		table.insert(
+			spread,
+			("%s %d%% (%d)"):format(
+				Rarity.name(tier),
+				math.round(Rarity.share(tier) * 100),
+				#Rarity.speciesIn(tier)
+			)
+		)
+	end
+	print(("[ConveyorService] Rarity spread — %s."):format(table.concat(spread, ", ")))
 end
 
 return ConveyorService

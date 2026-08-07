@@ -48,6 +48,8 @@ export type GrowthSpec = {
 
 export type PlantSpec = {
 	DisplayName: string,
+	-- Which rarity band the species sits in, 0..5. See Rarities below.
+	Rarity: number,
 	Growth: GrowthSpec,
 	Sprout: FormSpec,
 	Mature: FormSpec,
@@ -62,6 +64,10 @@ export type ProductSpec = {
 	-- The single item consumed, one per run. A raw fruit at tier 1, and the
 	-- tier below's product above that — which is what makes the chain a chain.
 	Source: string,
+	-- Inherited from the species this was baked from, unchanged all the way up:
+	-- a Watermelon Masterpiece is as Mythic as the melon it started as. Refining
+	-- makes an item dearer, never rarer.
+	Rarity: number,
 	-- Which factory makes it. A tier-N machine accepts exactly the items whose
 	-- recipe is tier N, so this number is both "what comes out" and "what eats
 	-- the input".
@@ -70,6 +76,48 @@ export type ProductSpec = {
 	SellPrice: number,
 	Size: Vector3,
 	Color: Color3,
+}
+
+--[[ Rarity
+
+	Every species sits in one of six rarity bands, 0 (Common) up to 5 (Mythic).
+
+	**A band is scarcity and nothing else.** It decides how often the belt offers
+	that seed, and it says so on the prompt and in the seed's outline. It does
+	not touch price, grow time, yield or anything a plant does once it is in the
+	ground — all of that is already authored per species below.
+
+	The bands bucket the catalogue's *own* price order, three species at a time,
+	so a rarer fruit is always the dearer and slower one and the two orderings
+	can never contradict each other. A nineteenth species is banded by wherever
+	its price puts it in that list.
+
+	Weights are per *species*, not per band. With three species in each they work
+	out at roughly 36 / 24 / 17 / 11 / 8 / 5 percent of the belt, so at one seed
+	every SpawnInterval some Common comes past every dozen seconds while a
+	*particular* Mythic is a minute and a half apart — the top of the catalogue
+	becomes something you wait for rather than something you simply buy.
+]]
+export type RaritySpec = {
+	Name: string,
+	-- Named on the belt prompt and worn as the seed's outline, so how rare a
+	-- seed is can be read across the belt rather than only after buying it.
+	Color: Color3,
+	-- Relative chance that one *particular* species in this band is what comes
+	-- past next. Only the ratios matter; they are not percentages.
+	Weight: number,
+}
+
+-- Keyed by the band itself, 0..5, rather than 1..6 — the number in this table
+-- is the number on the species, so nothing anywhere has to add or subtract one.
+-- Its extent is how many bands exist; a seventh entry needs no other edit.
+local Rarities: { [number]: RaritySpec } = {
+	[0] = { Name = "Common", Color = Color3.fromRGB(198, 204, 212), Weight = 24 },
+	[1] = { Name = "Uncommon", Color = Color3.fromRGB(88, 194, 100), Weight = 16 },
+	[2] = { Name = "Rare", Color = Color3.fromRGB(72, 138, 232), Weight = 11 },
+	[3] = { Name = "Epic", Color = Color3.fromRGB(168, 96, 228), Weight = 7 },
+	[4] = { Name = "Legendary", Color = Color3.fromRGB(246, 158, 52), Weight = 5 },
+	[5] = { Name = "Mythic", Color = Color3.fromRGB(242, 78, 112), Weight = 3 },
 }
 
 --[[ The species catalogue
@@ -93,6 +141,9 @@ export type ProductSpec = {
 -- comes out is an ordinary PlantSpec; nothing downstream can tell.
 type PlantEntry = {
 	Name: string,
+	-- Which band of the six above. Authored rather than derived from the price,
+	-- so a species can be moved a band without its price moving with it.
+	Rarity: number,
 	-- Seconds from seed to true form. Fruit only starts after this.
 	GrowTime: number,
 	-- The only stage authored by hand, because it is the only one that has to
@@ -136,6 +187,7 @@ end
 local function species(entry: PlantEntry): PlantSpec
 	return {
 		DisplayName = entry.Name,
+		Rarity = entry.Rarity,
 		Growth = {
 			Time = entry.GrowTime,
 			StartScale = START_SCALE,
@@ -170,6 +222,7 @@ end
 local Catalogue: { PlantEntry } = {
 	{
 		Name = "Apple",
+		Rarity = 0,
 		GrowTime = 5,
 		Mature = {
 			StemHeight = 4.2,
@@ -189,6 +242,7 @@ local Catalogue: { PlantEntry } = {
 	},
 	{
 		Name = "Pear",
+		Rarity = 0,
 		GrowTime = 6,
 		Mature = {
 			StemHeight = 4.6,
@@ -209,6 +263,7 @@ local Catalogue: { PlantEntry } = {
 	{
 		-- A vine: low and wide rather than tall.
 		Name = "Grape",
+		Rarity = 0,
 		GrowTime = 7,
 		Mature = {
 			StemHeight = 2.6,
@@ -228,6 +283,7 @@ local Catalogue: { PlantEntry } = {
 	},
 	{
 		Name = "Strawberry",
+		Rarity = 1,
 		GrowTime = 8,
 		Mature = {
 			StemHeight = 3,
@@ -247,6 +303,7 @@ local Catalogue: { PlantEntry } = {
 	},
 	{
 		Name = "Blueberry",
+		Rarity = 1,
 		GrowTime = 9,
 		Mature = {
 			StemHeight = 2.4,
@@ -266,6 +323,7 @@ local Catalogue: { PlantEntry } = {
 	},
 	{
 		Name = "Raspberry",
+		Rarity = 1,
 		GrowTime = 10,
 		Mature = {
 			StemHeight = 3.4,
@@ -285,6 +343,7 @@ local Catalogue: { PlantEntry } = {
 	},
 	{
 		Name = "Blackberry",
+		Rarity = 2,
 		GrowTime = 11,
 		Mature = {
 			StemHeight = 3.6,
@@ -304,6 +363,7 @@ local Catalogue: { PlantEntry } = {
 	},
 	{
 		Name = "Cherry",
+		Rarity = 2,
 		GrowTime = 12,
 		Mature = {
 			StemHeight = 5,
@@ -323,6 +383,7 @@ local Catalogue: { PlantEntry } = {
 	},
 	{
 		Name = "Peach",
+		Rarity = 2,
 		GrowTime = 14,
 		Mature = {
 			StemHeight = 5.2,
@@ -342,6 +403,7 @@ local Catalogue: { PlantEntry } = {
 	},
 	{
 		Name = "Plum",
+		Rarity = 3,
 		GrowTime = 16,
 		Mature = {
 			StemHeight = 5,
@@ -361,6 +423,7 @@ local Catalogue: { PlantEntry } = {
 	},
 	{
 		Name = "Kiwi",
+		Rarity = 3,
 		GrowTime = 18,
 		Mature = {
 			StemHeight = 3,
@@ -380,6 +443,7 @@ local Catalogue: { PlantEntry } = {
 	},
 	{
 		Name = "Lemon",
+		Rarity = 3,
 		GrowTime = 20,
 		Mature = {
 			StemHeight = 4.8,
@@ -400,6 +464,7 @@ local Catalogue: { PlantEntry } = {
 	{
 		-- Cantaloupe. A ground vine, so almost no stem under a broad leaf.
 		Name = "Melon",
+		Rarity = 4,
 		GrowTime = 23,
 		Mature = {
 			StemHeight = 1.8,
@@ -419,6 +484,7 @@ local Catalogue: { PlantEntry } = {
 	},
 	{
 		Name = "Orange",
+		Rarity = 4,
 		GrowTime = 26,
 		Mature = {
 			StemHeight = 5,
@@ -440,6 +506,7 @@ local Catalogue: { PlantEntry } = {
 		-- A cactus: the "stem" is the thick green column and the crown is the
 		-- oversized night bloom.
 		Name = "Dragon Fruit",
+		Rarity = 4,
 		GrowTime = 30,
 		Mature = {
 			StemHeight = 4.4,
@@ -460,6 +527,7 @@ local Catalogue: { PlantEntry } = {
 	{
 		-- Paddle leaves, and the crown is the dark red flower bud.
 		Name = "Banana",
+		Rarity = 5,
 		GrowTime = 34,
 		Mature = {
 			StemHeight = 5.4,
@@ -479,6 +547,7 @@ local Catalogue: { PlantEntry } = {
 	},
 	{
 		Name = "Coconut",
+		Rarity = 5,
 		GrowTime = 40,
 		Mature = {
 			StemHeight = 7.5,
@@ -498,6 +567,7 @@ local Catalogue: { PlantEntry } = {
 	},
 	{
 		Name = "Watermelon",
+		Rarity = 5,
 		GrowTime = 48,
 		Mature = {
 			StemHeight = 1.6,
@@ -587,6 +657,10 @@ for _, speciesName in ipairs(SpeciesOrder) do
 		local price = fruit.SellPrice
 		local baked = fruit.Color:Lerp(BAKED_COLOR, BAKED_BLEND)
 
+		-- Carried, not recomputed: how scarce a thing is was settled when the
+		-- seed came off the belt, and baking it cannot change that.
+		local rarity = Plants[speciesName].Rarity
+
 		for tier, step in ipairs(Tiers) do
 			price = math.ceil(price * step.PriceMultiplier)
 
@@ -594,6 +668,7 @@ for _, speciesName in ipairs(SpeciesOrder) do
 			Products[name] = {
 				Name = name,
 				Source = source,
+				Rarity = rarity,
 				Tier = tier,
 				ProcessTime = step.ProcessTime,
 				SellPrice = price,
@@ -604,6 +679,24 @@ for _, speciesName in ipairs(SpeciesOrder) do
 			source = name
 		end
 	end
+end
+
+--[[ The generator's pool table
+
+	One machine, described the way the design doc describes it: a tier and a
+	level. The same shape is what `Config.Factory.StartingFactories` hands out, so
+	nothing downstream can tell a machine that was granted from one that was won.
+]]
+export type FactoryOffer = {
+	Tier: number,
+	Level: number,
+}
+
+-- Exists so the pool below can be written as the grid it actually is, one call
+-- per box, tier then level — the same trick `species` plays for the catalogue.
+-- It runs at load; nothing can tell the result from a hand-written table.
+local function box(tier: number, level: number): FactoryOffer
+	return { Tier = tier, Level = level }
 end
 
 local Config = {
@@ -671,6 +764,13 @@ local Config = {
 		-- kinds have to read apart on a moving belt, but a seed should not look
 		-- like the fruit itself.
 		Darkness = 0.35,
+
+		-- Belt seeds from this band up wear their rarity colour as an outline.
+		-- Common is deliberately left plain: an outline on a third of the belt is
+		-- wallpaper, and the whole point is that an unusual seed catches the eye
+		-- from far enough away to walk over for it. Set to 0 to outline
+		-- everything, or above the top band to outline nothing.
+		OutlineFromRarity = 1,
 
 		-- Seeds are bought off the belt, priced at this many times what one of
 		-- the fruit sells for. A plant bears forever, so any seed eventually
@@ -764,16 +864,41 @@ local Config = {
 		ZoneName = "Fatory",
 		FolderName = "Factories",
 
-		-- Suffix on the Tool's name, so a machine reads as "Tier 3 Factory" in the
-		-- hotbar. Display only — TierAttribute below is what identifies a Tool as
-		-- a factory and decides which tier gets placed. One Tool *per tier*, each
-		-- carrying that tier's whole unplaced stock as a count attribute.
+		-- Suffix on the Tool's name, so a machine reads as "Tier 3 Lv 2 Factory" in
+		-- the hotbar. Display only — the two attributes below are what identify a
+		-- Tool as a factory and decide what gets placed. **One Tool is exactly one
+		-- placeable machine**, the same shape produce has: two tier-3s are two
+		-- Tools, not one Tool carrying a count.
 		ToolName = "Factory",
 
 		-- Attribute naming the tier, on both the Tool and the placed model. The
 		-- same selector-not-proof role SeedSpecies plays for seeds: the server
 		-- re-checks it against the ladder before placing anything.
 		TierAttribute = "FactoryTier",
+
+		-- Attribute naming the level, alongside the tier and re-checked the same
+		-- way. Tier says *what* a machine refines; level says how well.
+		LevelAttribute = "FactoryLevel",
+
+		-- How many levels a machine can have. The generator's pool table deals
+		-- levels 1..4, so this is that table's ceiling.
+		MaxLevel = 4,
+
+		-- What each level multiplies the value of a machine's output by. Level 1 is
+		-- 1.0 by definition — a level-1 machine is the old, unlevelled machine — so
+		-- every number the ladder was tuned with still holds at the bottom.
+		--
+		-- The multiplier lands on the *product*, and products are priced off what
+		-- went in, so a levelled machine feeding another levelled machine compounds:
+		-- an L4 tier-1 makes a 90-coin Strawberry Pie (30 x 3), and an L4 tier-2 fed
+		-- that Pie makes a 594-coin Cake (90 x 2.2 x 3) against a base Cake's 66.
+		-- Produce.gradeAfter is the one place that compounding is expressed.
+		LevelMultipliers = { 1, 1.5, 2, 3 },
+
+		-- Unplaced factories one player may hold. The generator is an endless
+		-- source, so without this a player who never places anything accumulates
+		-- Tools until the Backpack is unusable.
+		MaxCarried = 8,
 
 		-- Placement lattice, in studs. Cells are measured from the zone's own
 		-- centre, so the grid moves and rotates with the pad instead of being
@@ -790,19 +915,22 @@ local Config = {
 		PlaceCooldown = 0.2,
 
 		-- Handed out on join, and re-issued after a respawn replaces the Backpack.
-		-- One entry per tier, so the array's length *is* how many tiers exist.
+		-- One entry per machine, each naming its own tier *and* level.
 		--
-		-- Six machines in total against a MaxPlaced of 6: exactly one full ladder
-		-- plus a second tier-1, which is the shape the loop wants. Tier 1 runs in
-		-- 3s and tier 5 in 18s, so the bottom of the chain is what starves first.
-		StartingStock = { 2, 1, 1, 1, 1 },
+		-- **Empty: a player starts with none.** Every machine is now won off the
+		-- generator, which is the whole point of FactoryRng below — handing out a
+		-- free ladder would skip the feature entirely.
+		StartingFactories = {} :: { FactoryOffer },
 
-		-- Taking a machine back. Currently off, so the Pick Up prompt never shows
-		-- and a placed factory stays where it was put — it burns one of a fixed
-		-- number of machines *and* blocks its cell for the rest of the round.
-		-- Flip this to bring the prompt back; the handler behind it is still wired
-		-- and still refuses a machine that is working or has a product waiting.
-		CanRemove = false,
+		-- Taking a machine back into stock, freeing its cell.
+		--
+		-- **On, and it has to be**, now that machines have levels and come off an
+		-- endless generator whose own level rises. A player's first six pick-ups
+		-- are all low level; with this off those six cells would be the whole game
+		-- and a better machine could never replace a worse one, which would make
+		-- levels decorative. The handler still refuses a machine that is working or
+		-- has a product waiting, so nothing mid-cycle can be pocketed.
+		CanRemove = true,
 
 		-- Held rather than tapped, and on its own key, so taking a machine back
 		-- can never be hit while spamming E to insert and collect.
@@ -836,6 +964,12 @@ local Config = {
 		PipInset = 1.9,
 		PipColor = Color3.fromRGB(252, 232, 130),
 
+		-- Level gets its own row, on the *back* edge and in its own colour, for the
+		-- same reason tier got pips in the first place: two numbers that both matter
+		-- must not be told the same way. Tier is the front row, level is the back
+		-- one, and neither is ever inferred from the other.
+		LevelPipColor = Color3.fromRGB(126, 240, 190),
+
 		-- Studs between the top of the body and the *underside* of the item on
 		-- display in the slot. Measured to the underside, not the centre, because
 		-- a tier-5 Masterpiece is four times the height of a tier-1 Pie and a
@@ -847,6 +981,98 @@ local Config = {
 		-- Log the outcome of every placement, insert and collect. A refusal is
 		-- otherwise completely silent, so leave this on while developing.
 		LogRequests = true,
+	},
+
+	--[[ Where factories come from.
+
+		The belt is the seed shop; this is the factory shop, and it deals in luck
+		rather than coins. A machine appears on the pad, stands there for
+		SpawnInterval seconds, and is replaced whether or not anybody took it.
+		Picking one up is free — the price is that you had to be standing there.
+
+		**Every player has their own generator**, because the map is being designed
+		one farm per player: own slot on the pad, own timer, own RNG level, own
+		offer that only they can take. Nothing here is shared, which is why the pad
+		is a zone with slots along it rather than a single pedestal.
+	]]
+	FactoryRng = {
+		-- The pad offers stand on. A zone like Farm, Fatory and Worker, not a
+		-- marker: slots are measured along its own X axis from its own CFrame, so
+		-- moving or rotating it in Studio carries them along.
+		ZoneName = "FactoryRNG",
+		FolderName = "FactoryOffers",
+
+		-- Studs between one player's slot and the next. A machine's base is 7
+		-- studs square, so this leaves a two-stud gap between neighbours.
+		SlotSpacing = 9,
+
+		-- Studs between the pad's top face and the underside of the offer.
+		HoverOffset = 0,
+
+		-- Seconds an offer stands before it is destroyed and re-rolled. This is
+		-- both the despawn timer and the spawn interval: there is exactly one
+		-- offer per player at a time, so they are the same number.
+		SpawnInterval = 10,
+
+		-- What every player's generator starts at, and the row of the pool table
+		-- they are dealt from. Upgrading it is not purchasable yet — the level is
+		-- stored per player and read on every roll, so adding a way to buy one is
+		-- a matter of calling setLevel.
+		StartingLevel = 1,
+
+		-- Which *row* a roll actually deals from, as weights out of 100. Mostly the
+		-- generator's own level, sometimes the row below it, and very rarely a
+		-- glimpse of the row above — that 1% is the only way to see a machine you
+		-- have not upgraded to yet.
+		--
+		-- At the bottom row there is no Below and at the top no Above; whichever is
+		-- missing folds back into Current rather than being re-rolled, so the odds
+		-- stay honest at the ends instead of silently looping.
+		RowWeights = {
+			Current = 70,
+			Below = 29,
+			Above = 1,
+		},
+
+		-- Which *box* of that row, as weights out of 100. Box 4 is the best entry
+		-- in every row and the rarest.
+		BoxRates = { 50, 30, 15, 5 },
+
+		-- ...except when the roll dropped to the row below, where all four boxes
+		-- are equally likely. Being dealt a worse row is compensated by a five-fold
+		-- better chance at that row's best box, so dropping a row is a smaller loss
+		-- than it looks.
+		BelowBoxRates = { 25, 25, 25, 25 },
+
+		--[[ The pool itself: one row per generator level, four boxes per row.
+
+			Reading down a column shows what upgrading the generator buys; reading
+			across a row shows what the box weights above are choosing between. The
+			array's length *is* how many generator levels exist — a sixth row needs
+			no other edit.
+
+			  RNG Lv | Box 1 (50%) | Box 2 (30%) | Box 3 (15%) | Box 4 (5%)
+			  -------+-------------+-------------+-------------+------------
+			     1   |    T1 L1    |    T1 L2    |    T2 L1    |   T2 L2
+			     2   |    T1 L3    |    T2 L2    |    T3 L1    |   T3 L2
+			     3   |    T1 L4    |    T2 L3    |    T3 L3    |   T4 L1
+			     4   |    T3 L4    |    T4 L2    |    T5 L1    |   T5 L2
+			     5   |    T4 L3    |    T4 L4    |    T5 L3    |   T5 L4
+		]]
+		Pool = {
+			{ box(1, 1), box(1, 2), box(2, 1), box(2, 2) },
+			{ box(1, 3), box(2, 2), box(3, 1), box(3, 2) },
+			{ box(1, 4), box(2, 3), box(3, 3), box(4, 1) },
+			{ box(3, 4), box(4, 2), box(5, 1), box(5, 2) },
+			{ box(4, 3), box(4, 4), box(5, 3), box(5, 4) },
+		} :: { { FactoryOffer } },
+
+		PromptRange = 12,
+
+		-- Print every roll: which row it landed on, which box, and what came out.
+		-- A generator that deals badly and one that is broken look identical from
+		-- the outside, so leave this on while tuning the weights.
+		LogRolls = true,
 	},
 
 	-- NPCs that run the whole loop on the owner's behalf: harvest a ripe fruit,
@@ -1018,6 +1244,11 @@ local Config = {
 	Plants = Plants,
 	SpeciesOrder = SpeciesOrder,
 	Products = Products,
+
+	-- The six rarity bands, keyed 0..5. Read through the Rarity module rather
+	-- than indexed directly, so an out-of-range band falls back instead of
+	-- returning nil into someone's string format.
+	Rarities = Rarities,
 
 	-- The refining ladder itself. Its length is how many factory tiers exist,
 	-- so nothing counts tiers by hand.
