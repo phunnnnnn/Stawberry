@@ -15,6 +15,7 @@ local Remotes = {
 	PLANT_SEED = "PlantSeed",
 	PLACE_FACTORY = "PlaceFactory",
 	SELL_FRUIT = "SellFruit",
+	BUY_UPGRADE = "BuyUpgrade",
 }
 
 local function container(): Instance

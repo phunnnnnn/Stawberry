@@ -1,25 +1,28 @@
 --!strict
 
 --[[
-	What a rarity band means, and what the belt sends down it next.
+	What a rarity band means, and which species sit in it.
 
 	Six bands, 0 (Common) to 5 (Mythic), authored in `Config.Rarities`. A band is
 	a species' *scarcity* and nothing else — price, grow time and yield are all
 	set per species in the catalogue, and the bands were drawn along that same
 	price order so the two can never disagree.
 
-	Shared for the reason Produce is: the belt rolls against these weights, the
-	prompt on a seed names the band, and the price card colours by it. A second
-	copy of the table would eventually advertise a seed at a rate the belt does
-	not actually deal it.
+	Shared for the reason Produce is: the belt deals by band, the prompt on a seed
+	names the band, and the price card colours by it.
 
 	Every lookup here **falls back rather than returning nil**, because a band is
 	almost always on its way into a string or a Color3. A species that names no
 	band, or one outside the table, reads as Common — which is the honest answer
 	for something nothing has said is rare.
 
-	`roll` is the belt's "what comes past next". Its cumulative weights are built
-	once at load rather than summed over eighteen species every spawn.
+	**How often a band comes past is no longer decided here.** It was, when the
+	belt was one shared stream rolling over the whole catalogue at once; now every
+	player has their own belt level and `Config.SeedRng.Pool` is the one place a
+	band's frequency is expressed. What is left here is the question that pool
+	cannot answer — *which* of a band's species — and `rollIn` is the whole of it.
+	A band's three species are equally likely, because a band is by definition a
+	set of species that are equally hard to come by.
 ]]
 
 local Config = require(script.Parent.Config)
@@ -41,12 +44,8 @@ end
 
 Rarity.MAX = maxTier
 
--- Species in catalogue order, each with the running weight total in the same
--- slot. Rolling is then one random draw and a walk up the totals.
-local order: { string } = {}
-local cumulative: { number } = {}
+-- Catalogue order within each band, so a roll is one draw against a count.
 local speciesByTier: { [number]: { string } } = {}
-local totalWeight = 0
 
 --[[ Reading a band ]]
 
@@ -86,42 +85,25 @@ function Rarity.speciesIn(tier: number): { string }
 	return if bucket then table.clone(bucket) else {}
 end
 
---[[ The belt ]]
+--[[ The belt's second draw ]]
 
--- What fraction of belt rolls land somewhere in this band, 0..1. The whole
--- point of the weights, so it is worth being able to print it rather than
--- working it out by hand from six numbers and a count.
-function Rarity.share(tier: number): number
-	if totalWeight <= 0 then
-		return 0
+-- One species out of a band, uniformly. The belt's pool has already decided
+-- *which* band; this is the only part of that decision left, and keeping it here
+-- is what stops the conveyor from needing to know the catalogue's shape.
+--
+-- Nil rather than a fallback species for a band nothing was authored into: that
+-- is a Config fault, and quietly dealing a Strawberry for it would hide a pool
+-- row pointing at a band that does not exist.
+function Rarity.rollIn(tier: number): string?
+	local bucket = speciesByTier[tier]
+	if not bucket or #bucket == 0 then
+		return nil
 	end
-	return #Rarity.speciesIn(tier) * Rarity.of(tier).Weight / totalWeight
-end
-
--- What comes past next: one species, weighted by its band. This is the only
--- place the belt's odds are decided.
-function Rarity.roll(): string
-	if #order == 0 or totalWeight <= 0 then
-		return Config.DefaultSpecies
-	end
-
-	local draw = math.random() * totalWeight
-	for index, ceiling in ipairs(cumulative) do
-		if draw < ceiling then
-			return order[index]
-		end
-	end
-
-	-- Only reachable if the draw lands a float's breadth past the last total.
-	return order[#order]
+	return bucket[math.random(#bucket)]
 end
 
 for _, speciesName in ipairs(Config.SpeciesOrder) do
 	local tier = Rarity.ofSpecies(speciesName)
-
-	totalWeight += Rarity.of(tier).Weight
-	table.insert(order, speciesName)
-	table.insert(cumulative, totalWeight)
 
 	local bucket = speciesByTier[tier]
 	if not bucket then

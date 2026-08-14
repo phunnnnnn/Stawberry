@@ -34,9 +34,10 @@
 	won here is the same machine `Config.Factory.StartingFactories` would have
 	handed out and nothing downstream can tell them apart.
 
-	The generator's own level is stored per player and read on every roll. There
-	is no way to buy an upgrade yet — `setLevel` is the whole of what one would
-	need to call.
+	The generator's own level is stored per player, read on every roll, and
+	published to the player as an attribute so the shop UI can show it without a
+	round trip. `UpgradeService` is what charges for a change; nothing here knows
+	a price.
 ]]
 
 local Players = game:GetService("Players")
@@ -45,6 +46,7 @@ local RunService = game:GetService("RunService")
 
 local Config = require(ReplicatedStorage.Shared.Config)
 local FactoryModel = require(ReplicatedStorage.Shared.FactoryModel)
+local PoolRoll = require(ReplicatedStorage.Shared.PoolRoll)
 local Produce = require(ReplicatedStorage.Shared.Produce)
 
 local FactoryService = require(script.Parent.FactoryService)
@@ -82,6 +84,13 @@ local function log(message: string, ...: any)
 	end
 end
 
+-- The level is the player's, so it is published on the player. An attribute
+-- rather than a leaderstat: it is not a score, and the shop is the only thing
+-- that reads it.
+local function publish(generator: Generator)
+	generator.player:SetAttribute(Config.FactoryRng.LevelAttribute, generator.level)
+end
+
 --[[ Slots ]]
 
 -- Lowest free post, so players who join after someone left fill the gap rather
@@ -107,70 +116,23 @@ end
 
 --[[ The roll ]]
 
--- Which row a roll actually deals from, and whether it stepped down to get
--- there. Stepping down is the one thing the caller needs back, because it
--- changes the box weights.
-local function rollRow(level: number): (number, boolean)
-	local weights = Config.FactoryRng.RowWeights
-
-	-- Whichever neighbour does not exist contributes nothing and its weight goes
-	-- to the current row. Re-rolling instead would be the same outcome with a
-	-- loop in it; clamping would silently make the end rows likelier than the
-	-- table says without anything recording that it happened.
-	local below = if level > 1 then weights.Below else 0
-	local above = if level < maxRngLevel then weights.Above else 0
-	local current = weights.Current + (weights.Below - below) + (weights.Above - above)
-
-	local pick = math.random() * (current + below + above)
-
-	if pick < below then
-		return level - 1, true
-	end
-	pick -= below
-
-	if pick < above then
-		return level + 1, false
-	end
-
-	return level, false
-end
-
--- Which box of a row, against a weight list. Falls back to the last box if the
--- weights and the row disagree about how many there are, rather than indexing
--- past the end of the table.
-local function rollBox(rates: { number }, boxes: number): number
-	local total = 0
-	for index = 1, math.min(#rates, boxes) do
-		total += rates[index]
-	end
-
-	local pick = math.random() * total
-	for index = 1, math.min(#rates, boxes) do
-		if pick < rates[index] then
-			return index
-		end
-		pick -= rates[index]
-	end
-
-	return boxes
-end
-
 -- One complete draw for a generator at `level`: the machine, and the row and box
 -- it came out of so the log can say where.
+--
+-- The two draws themselves live in PoolRoll, which the seed belt rolls through
+-- as well. Everything that decides *how far* a roll strays is still in this
+-- service's own Config block; what is shared is only the arithmetic.
 local function roll(level: number): (Config.FactoryOffer?, number, number, boolean)
 	local cfg = Config.FactoryRng
 
-	local row, steppedDown = rollRow(level)
-	local boxes = cfg.Pool[row]
-	if not boxes or #boxes == 0 then
+	local offer, row, box, steppedDown =
+		PoolRoll.roll(cfg.Pool, level, cfg.RowWeights, cfg.BoxRates, cfg.BelowBoxRates)
+
+	if not offer then
 		warn(("[FactoryRngService] pool row %d is missing or empty — nothing to deal."):format(row))
-		return nil, row, 0, steppedDown
 	end
 
-	local rates = if steppedDown then cfg.BelowBoxRates else cfg.BoxRates
-	local box = rollBox(rates, #boxes)
-
-	return boxes[box], row, box, steppedDown
+	return offer, row, box, steppedDown
 end
 
 --[[ Offers ]]
@@ -239,7 +201,7 @@ local function spawnOffer(generator: Generator)
 
 	local model, prompt = FactoryModel.createOffer(offer.Tier, offer.Level)
 	FactoryModel.place(model, slotGround(surface, generator.slot))
-	model:SetAttribute("OwnerUserId", generator.player.UserId)
+	model:SetAttribute(Config.FactoryRng.OwnerAttribute, generator.player.UserId)
 	model.Parent = offerFolder
 
 	prompt.Triggered:Connect(function(player: Player)
@@ -282,10 +244,8 @@ end
 
 -- Upgrades (or resets) a generator. Clamped to the pool rather than trusted, and
 -- the standing offer is re-rolled immediately so the change is visible without
--- waiting out the timer.
---
--- Nothing calls this yet: buying an upgrade is the missing half of the feature,
--- and this is the whole of what it would need.
+-- waiting out the timer — which is what makes an upgrade feel bought rather than
+-- merely paid for.
 function FactoryRngService.setLevel(player: Player, level: number): boolean
 	local generator = generators[player]
 	if not generator then
@@ -299,6 +259,7 @@ function FactoryRngService.setLevel(player: Player, level: number): boolean
 
 	generator.level = clamped
 	generator.clock = 0
+	publish(generator)
 	spawnOffer(generator)
 	return true
 end
@@ -328,6 +289,7 @@ local function addPlayer(player: Player)
 		prompt = nil,
 	}
 	generators[player] = generator
+	publish(generator)
 
 	-- Dealt one straight away rather than after a full interval: a player who
 	-- joins with nothing to place should not spend their first ten seconds

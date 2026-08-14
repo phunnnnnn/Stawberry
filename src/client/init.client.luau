@@ -35,4 +35,15 @@ startDisplay("Leaderboard", function()
 	require(script.Leaderboard).start()
 end)
 
+-- The shop is a purchase UI rather than a decoration, but it sits here for the
+-- same reason the rest do: a player who cannot open it can still farm, and one
+-- who cannot plant has no game at all.
+startDisplay("UpgradeShop", function()
+	require(script.UpgradeShop).start()
+end)
+
+startDisplay("OfferPrompts", function()
+	require(script.OfferPrompts).start()
+end)
+
 print("[Client] Ready — planting and selling are live.")

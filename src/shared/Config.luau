@@ -92,32 +92,31 @@ export type ProductSpec = {
 	can never contradict each other. A nineteenth species is banded by wherever
 	its price puts it in that list.
 
-	Weights are per *species*, not per band. With three species in each they work
-	out at roughly 36 / 24 / 17 / 11 / 8 / 5 percent of the belt, so at one seed
-	every SpawnInterval some Common comes past every dozen seconds while a
-	*particular* Mythic is a minute and a half apart — the top of the catalogue
-	becomes something you wait for rather than something you simply buy.
+	**How often a band comes past is not written here.** A band used to carry a
+	weight, back when the belt was one shared stream rolling over all eighteen
+	species at once. Now every player has their own belt level and SeedRng.Pool
+	below decides which band a roll lands in — so a band's frequency is a property
+	of the level you have bought, not of the band. Within a band the three species
+	are equally likely, which is what a band means.
 ]]
 export type RaritySpec = {
 	Name: string,
 	-- Named on the belt prompt and worn as the seed's outline, so how rare a
 	-- seed is can be read across the belt rather than only after buying it.
 	Color: Color3,
-	-- Relative chance that one *particular* species in this band is what comes
-	-- past next. Only the ratios matter; they are not percentages.
-	Weight: number,
 }
 
 -- Keyed by the band itself, 0..5, rather than 1..6 — the number in this table
 -- is the number on the species, so nothing anywhere has to add or subtract one.
--- Its extent is how many bands exist; a seventh entry needs no other edit.
+-- Its extent is how many bands exist; a seventh entry needs one more row in
+-- SeedRng.Pool to be reachable, and no other edit.
 local Rarities: { [number]: RaritySpec } = {
-	[0] = { Name = "Common", Color = Color3.fromRGB(198, 204, 212), Weight = 24 },
-	[1] = { Name = "Uncommon", Color = Color3.fromRGB(88, 194, 100), Weight = 16 },
-	[2] = { Name = "Rare", Color = Color3.fromRGB(72, 138, 232), Weight = 11 },
-	[3] = { Name = "Epic", Color = Color3.fromRGB(168, 96, 228), Weight = 7 },
-	[4] = { Name = "Legendary", Color = Color3.fromRGB(246, 158, 52), Weight = 5 },
-	[5] = { Name = "Mythic", Color = Color3.fromRGB(242, 78, 112), Weight = 3 },
+	[0] = { Name = "Common", Color = Color3.fromRGB(198, 204, 212) },
+	[1] = { Name = "Uncommon", Color = Color3.fromRGB(88, 194, 100) },
+	[2] = { Name = "Rare", Color = Color3.fromRGB(72, 138, 232) },
+	[3] = { Name = "Epic", Color = Color3.fromRGB(168, 96, 228) },
+	[4] = { Name = "Legendary", Color = Color3.fromRGB(246, 158, 52) },
+	[5] = { Name = "Mythic", Color = Color3.fromRGB(242, 78, 112) },
 }
 
 --[[ The species catalogue
@@ -788,6 +787,87 @@ local Config = {
 		MaxHeld = 20,
 	},
 
+	--[[ What the belt deals, and to whom.
+
+		The same two-draw mechanic the factory generator runs on — a row per level,
+		four boxes per row, weights for straying off your own row — over a pool of
+		*rarity bands* instead of machines. Both go through PoolRoll, so learning
+		one teaches the other and neither can drift.
+
+		**Every player has their own belt roll.** Spawns go round the players in
+		turn; each seed is rolled against that player's own level, tagged with their
+		id, and only they can buy it. The factory generator's reasoning applies
+		unchanged: an upgrade that a neighbour standing at the belt could snipe the
+		reward from would make this a footrace rather than a roll. In a solo server
+		it is indistinguishable from the shared belt this replaces.
+
+		The band decides only *which band*; which of its three species comes past is
+		Rarity's own weighting, so the two questions stay in one place each.
+	]]
+	SeedRng = {
+		-- Attribute naming which player a belt seed was rolled for. The same
+		-- selector-not-proof role SeedSpecies plays: the server re-checks it on
+		-- every purchase, and the client only uses it to hide prompts that are not
+		-- yours.
+		OwnerAttribute = "SeedOwnerUserId",
+
+		-- Attribute the level is published on, on the Player itself, so the shop UI
+		-- can show it without a round trip. Written by SeedRngService only.
+		LevelAttribute = "SeedRngLevel",
+
+		-- What every player's belt starts at, and the row of the pool below they
+		-- are dealt from.
+		StartingLevel = 1,
+
+		-- Which *row*, and which *box* of it. The same numbers the factory
+		-- generator uses, deliberately: two shops that stray from your level at
+		-- different rates would be two mechanics to learn rather than one.
+		RowWeights = {
+			Current = 70,
+			Below = 29,
+			Above = 1,
+		},
+		BoxRates = { 50, 30, 15, 5 },
+		BelowBoxRates = { 25, 25, 25, 25 },
+
+		--[[ The pool: one row per belt level, four boxes of rarity band per row.
+
+			Reading down a column shows what an upgrade buys. The top of the
+			catalogue is deliberately out of reach at level 1 — a Mythic seed is
+			something the belt earns the right to offer you, which is the whole of
+			what "levelling the belt" can mean when the seeds themselves are already
+			priced and banded.
+
+			  Belt Lv | Box 1 (50%) | Box 2 (30%) | Box 3 (15%) | Box 4 (5%)
+			  --------+-------------+-------------+-------------+-------------
+			     1    |   Common    |   Common    |  Uncommon   |    Rare
+			     2    |   Common    |  Uncommon   |    Rare     |    Epic
+			     3    |  Uncommon   |    Rare     |    Epic     |  Legendary
+			     4    |    Rare     |    Epic     |  Legendary  |  Legendary
+			     5    |    Epic     |  Legendary  |   Mythic    |   Mythic
+
+			Band numbers, not names, so this indexes Rarities directly and a seventh
+			band needs no translation table.
+		]]
+		Pool = {
+			{ 0, 0, 1, 2 },
+			{ 0, 1, 2, 3 },
+			{ 1, 2, 3, 4 },
+			{ 2, 3, 4, 4 },
+			{ 3, 4, 5, 5 },
+		} :: { { number } },
+
+		-- Coins to go from level N to N+1, so one entry fewer than there are rows.
+		-- First pass and unbalanced against anything: they are steep enough that
+		-- the belt is a thing to save for rather than a first-minute purchase, and
+		-- they are the only knob if that turns out wrong.
+		UpgradeCosts = { 1500, 6000, 20000, 60000 },
+
+		-- Print every roll, and the band spread each level actually deals. A belt
+		-- that deals badly and one that is broken look identical from the outside.
+		LogRolls = true,
+	},
+
 	Inventory = {
 		-- Backpack cap across all produce, fruit and factory products together.
 		-- Produce does not stack — every item is its own Tool — so without a cap
@@ -1002,6 +1082,15 @@ local Config = {
 		ZoneName = "FactoryRNG",
 		FolderName = "FactoryOffers",
 
+		-- Attribute naming which player an offer belongs to. Read back by the
+		-- server on every Take, and by the client to hide prompts that are not
+		-- yours — the same pair of jobs SeedRng.OwnerAttribute does for the belt.
+		OwnerAttribute = "OwnerUserId",
+
+		-- Attribute the level is published on, on the Player itself, so the shop UI
+		-- can show it without a round trip. Written by FactoryRngService only.
+		LevelAttribute = "FactoryRngLevel",
+
 		-- Studs between one player's slot and the next. A machine's base is 7
 		-- studs square, so this leaves a two-stud gap between neighbours.
 		SlotSpacing = 9,
@@ -1015,10 +1104,15 @@ local Config = {
 		SpawnInterval = 10,
 
 		-- What every player's generator starts at, and the row of the pool table
-		-- they are dealt from. Upgrading it is not purchasable yet — the level is
-		-- stored per player and read on every roll, so adding a way to buy one is
-		-- a matter of calling setLevel.
+		-- they are dealt from. Bought a row at a time through UpgradeService, off
+		-- the costs below.
 		StartingLevel = 1,
+
+		-- Coins to go from level N to N+1, so one entry fewer than there are pool
+		-- rows. Dearer than the belt's at every step: this is what unlocks tiers
+		-- 3-5, and a levelled machine multiplies everything downstream of it, where
+		-- a rarer seed only raises the number the ladder starts from.
+		UpgradeCosts = { 3000, 12000, 45000, 150000 },
 
 		-- Which *row* a roll actually deals from, as weights out of 100. Mostly the
 		-- generator's own level, sometimes the row below it, and very rarely a
@@ -1073,6 +1167,31 @@ local Config = {
 		-- A generator that deals badly and one that is broken look identical from
 		-- the outside, so leave this on while tuning the weights.
 		LogRolls = true,
+	},
+
+	--[[ The shop that sells the two levels above.
+
+		Prices live with the thing they price — SeedRng.UpgradeCosts and
+		FactoryRng.UpgradeCosts — so a pool row and its cost are edited together and
+		cannot fall out of step. What is here is the shop itself.
+
+		It is a screen panel rather than a prompt on a part, because neither
+		generator has a counter to stand at: the belt is 122 studs long and the
+		factory pad is across the map from it, and a shop selling both has nowhere
+		to be that is not far from one of them.
+	]]
+	Upgrades = {
+		Title = "Upgrades",
+
+		-- The always-visible button that opens it, and the key that does the same.
+		-- Both, because a player who is never told the key never finds the shop and
+		-- a player who has found it once would rather not aim at a corner again.
+		ButtonText = "Upgrades",
+		ToggleKey = Enum.KeyCode.U,
+
+		-- Log every purchase and every refusal. A refused upgrade is otherwise as
+		-- silent as a refused plant.
+		LogPurchases = true,
 	},
 
 	-- NPCs that run the whole loop on the owner's behalf: harvest a ripe fruit,

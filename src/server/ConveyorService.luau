@@ -10,10 +10,16 @@
 	arrives next is luck and what you take is a decision. A seed nobody can
 	afford simply rides off the end.
 
-	The roll is **weighted by rarity**, not uniform: a Common comes past several
-	times for every Mythic, which is what makes the top of the catalogue worth
-	waiting at the belt for rather than just expensive. The odds live in the
-	Rarity module beside the bands themselves; nothing here knows them.
+	**Each seed is rolled for one player, and only they can buy it.** Whose turn
+	it is and what their level deals are both `SeedRngService`'s to answer;
+	nothing here knows a band or a weight. What this service owns is the seed
+	itself, which is why the ownership check lives at the prompt: the id is
+	written onto the part when it spawns and re-read when E is pressed, the same
+	selector-not-proof split every attribute in this codebase makes.
+
+	A seed rolled for a player who has since left simply rides off the end
+	unbought. Destroying it early would pop a seed out of the stream mid-belt for
+	everyone watching, to save a few seconds of a lane nobody was going to use.
 
 	One lane, down the centreline: the stream is a single file rather than a
 	scatter, so the seed under the prompt is unambiguous and the one behind it
@@ -27,14 +33,18 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
 local Config = require(ReplicatedStorage.Shared.Config)
-local Rarity = require(ReplicatedStorage.Shared.Rarity)
 local Seed = require(ReplicatedStorage.Shared.Seed)
 
 local InventoryService = require(script.Parent.InventoryService)
+local SeedRngService = require(script.Parent.SeedRngService)
 
 type SeedRecord = {
 	part: BasePart,
 	species: string,
+	-- Who this seed was rolled for. Held on the record *and* written to the part:
+	-- the record is what the prompt checks, the attribute is what the client reads
+	-- to stop showing you prompts you cannot press.
+	owner: Player,
 	offset: number, -- position along the belt's local Z axis
 	claimed: boolean,
 }
@@ -72,9 +82,21 @@ local function collect(player: Player, record: SeedRecord)
 		return
 	end
 
-	-- Refused — too poor, or no room. Leave the seed riding rather than
-	-- destroying it: it is still for sale to whoever can afford it, and nothing
-	-- the player paid for has gone anywhere.
+	-- Prompts are visible to everyone the client has not hidden them from, so this
+	-- is the check that makes a seed one player's rather than a race. Refused the
+	-- same way as an unaffordable one: the seed keeps riding, for its owner.
+	if player ~= record.owner then
+		if Config.Conveyor.LogPurchases then
+			warn(("[ConveyorService] %s tried to buy %s, which was rolled for %s")
+				:format(player.Name, record.part.Name, record.owner.Name))
+		end
+		return
+	end
+
+	-- Refused — too poor, or no room. Leave the seed riding rather than destroying
+	-- it: it is still theirs for the rest of the belt, so selling something or
+	-- planting a seed is enough to come back for it, and nothing the player paid
+	-- for has gone anywhere.
 	local bought, reason = InventoryService.buySeed(player, record.species)
 	if not bought then
 		if Config.Conveyor.LogPurchases then
@@ -98,14 +120,21 @@ local function collect(player: Player, record: SeedRecord)
 end
 
 local function spawnSeed()
-	-- Weighted by band, so scarcity is a second gate on a species alongside its
-	-- price. Rarity owns the odds; asking it is the whole of the decision.
-	local species = Rarity.roll()
-	local part = Seed.createPickup(species)
+	-- Whose turn it is, and what their own belt level deals them. Nil when there
+	-- is nobody in the server to roll for, in which case nothing spawns — a seed
+	-- with no owner is one nobody could buy.
+	local deal = SeedRngService.deal()
+	if not deal then
+		return
+	end
+
+	local part = Seed.createPickup(deal.species)
+	part:SetAttribute(Config.SeedRng.OwnerAttribute, deal.player.UserId)
 
 	local record: SeedRecord = {
 		part = part,
-		species = species,
+		species = deal.species,
+		owner = deal.player,
 		offset = entryOffset,
 		claimed = false,
 	}
@@ -210,6 +239,9 @@ function ConveyorService.start()
 	RunService.Heartbeat:Connect(step)
 	started = true
 
+	-- What each level deals is SeedRngService's to print; this line is the belt
+	-- itself. One seed per interval is shared out among the players in the server,
+	-- so what any one of them waits is that interval times the headcount.
 	print(
 		("[ConveyorService] Running on %s — %.1f studs/s, one seed every %.1fs, %d species for sale.")
 			:format(
@@ -219,22 +251,6 @@ function ConveyorService.start()
 				#Config.SpeciesOrder
 			)
 	)
-
-	-- The odds, spelled out. Six weights against a per-band species count is not
-	-- worth working out by hand when the belt can simply state what it deals —
-	-- and it is the only way to see that a weight edit did what was intended.
-	local spread: { string } = {}
-	for tier = 0, Rarity.MAX do
-		table.insert(
-			spread,
-			("%s %d%% (%d)"):format(
-				Rarity.name(tier),
-				math.round(Rarity.share(tier) * 100),
-				#Rarity.speciesIn(tier)
-			)
-		)
-	end
-	print(("[ConveyorService] Rarity spread — %s."):format(table.concat(spread, ", ")))
 end
 
 return ConveyorService
